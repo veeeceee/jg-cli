@@ -174,48 +174,6 @@ wheels = [
 ]
 
 [[package]]
-name = "ch-cli"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "click" },
-    { name = "httpx" },
-    { name = "keyring" },
-    { name = "pydantic" },
-    { name = "pyperclip" },
-    { name = "rich" },
-    { name = "textual" },
-    { name = "tomli-w" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "respx" },
-    { name = "ruff" },
-    { name = "textual-dev" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "click", specifier = ">=8.1.7" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "keyring", specifier = ">=25.0.0" },
-    { name = "pydantic", specifier = ">=2.7.0" },
-    { name = "pyperclip", specifier = ">=1.8.2" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "respx", marker = "extra == 'dev'", specifier = ">=0.21.0" },
-    { name = "rich", specifier = ">=13.7.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4.0" },
-    { name = "textual", specifier = ">=0.85.0" },
-    { name = "textual-dev", marker = "extra == 'dev'", specifier = ">=1.5.0" },
-    { name = "tomli-w", specifier = ">=1.0.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "click"
 version = "8.3.3"
 source = { registry = "https://pypi.org/simple" }
@@ -449,6 +407,48 @@ sdist = { url = "https://files.pythonhosted.org/packages/7b/6f/357efd7602486741a
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b2/a3/e137168c9c44d18eff0376253da9f1e9234d0239e0ee230d2fee6cea8e55/jeepney-0.9.0-py3-none-any.whl", hash = "sha256:97e5714520c16fc0a45695e5365a2e11b81ea79bba796e26f9f1d178cb182683", size = 49010 },
 ]
+
+[[package]]
+name = "jg"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "click" },
+    { name = "httpx" },
+    { name = "keyring" },
+    { name = "pydantic" },
+    { name = "pyperclip" },
+    { name = "rich" },
+    { name = "textual" },
+    { name = "tomli-w" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "respx" },
+    { name = "ruff" },
+    { name = "textual-dev" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "click", specifier = ">=8.1.7" },
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "keyring", specifier = ">=25.0.0" },
+    { name = "pydantic", specifier = ">=2.7.0" },
+    { name = "pyperclip", specifier = ">=1.8.2" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "respx", marker = "extra == 'dev'", specifier = ">=0.21.0" },
+    { name = "rich", specifier = ">=13.7.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4.0" },
+    { name = "textual", specifier = ">=0.85.0" },
+    { name = "textual-dev", marker = "extra == 'dev'", specifier = ">=1.5.0" },
+    { name = "tomli-w", specifier = ">=1.0.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "jinja2"

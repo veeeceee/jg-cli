@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from ch.github import GhError, gh_available, my_open_prs, review_requested_prs
+from jg.github import GhError, gh_available, my_open_prs, review_requested_prs
 
 console = Console()
 err = Console(stderr=True)
@@ -54,7 +54,7 @@ def _list(ctx: click.Context) -> None:
         err.print(f"[red]✗[/] {e}")
         ctx.exit(1)
 
-    from ch.render import relative_time, truncate
+    from jg.render import relative_time, truncate
 
     if mine:
         t = Table(title=Text("My PRs", style="bold cyan"), title_justify="left", header_style="dim")

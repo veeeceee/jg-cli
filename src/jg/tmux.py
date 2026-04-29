@@ -11,7 +11,7 @@ import shlex
 import subprocess
 from dataclasses import dataclass
 
-from ch.config import TmuxConfig
+from jg.config import TmuxConfig
 
 
 @dataclass

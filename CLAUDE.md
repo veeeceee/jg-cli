@@ -1,4 +1,4 @@
-# ch — Jira + GitHub TUI dashboard
+# jg — Jira + GitHub TUI dashboard
 
 Fast Python+Textual dashboard for Jira (Atlassian Cloud) + GitHub (`gh` CLI), with a Claude Code bridge for inferential work. Built to bypass LLM latency for mechanical operations (list, transition, assign, comment) while keeping the AI on tap via tmux panes.
 
@@ -6,41 +6,41 @@ Fast Python+Textual dashboard for Jira (Atlassian Cloud) + GitHub (`gh` CLI), wi
 
 The MCP-server-via-Claude approach is great for inference (drafting test cases, summarizing tickets, picking transitions) but slow for mechanical ops. This tool splits the layers:
 
-- **Mechanical** (sub-second, no LLM) — `ch sprint`, `ch view`, `ch transition`, `ch comment`, `ch dashboard`, etc.
-- **Inferential** (LLM, latency justified) — `ch ai <KEY>` opens a tmux pane with `claude /issue CH-XXX` pre-loaded; `ch ai brainstorm` pre-loads project context for new-ticket ideation; `A` key on cards/PRs/repos in the TUI does the same.
+- **Mechanical** (sub-second, no LLM) — `jg sprint`, `jg view`, `jg transition`, `jg comment`, `jg dashboard`, etc.
+- **Inferential** (LLM, latency justified) — `jg ai <KEY>` opens a tmux pane with `claude /issue CH-XXX` pre-loaded; `jg ai brainstorm` pre-loads project context for new-ticket ideation; `A` key on cards/PRs/repos in the TUI does the same.
 
 ## Architecture
 
 ```
-src/ch/
+src/jg/
 ├── cli.py              # click entrypoint, lazy command registration
-├── config.py           # ~/.config/ch/config.toml + Project dataclass + per-repo path overrides
+├── config.py           # ~/.config/jg/config.toml + Project dataclass + per-repo path overrides
 ├── auth.py             # Atlassian OAuth 2.0 (3LO), tokens in macOS Keychain via `keyring`
 ├── api.py              # async httpx client for Atlassian REST v3 (uses /rest/api/3/search/jql)
 ├── adf.py              # Atlassian Document Format render/build (custom fields like Test Cases need ADF)
 ├── github.py           # `gh` CLI wrapper + `gh api graphql` calls (orgs need viewer.repositories with ownerAffiliations)
 ├── render.py           # Rich tables, status normalization, gradient/badge helpers
 ├── gradient.py         # per-character RGB gradient text (lipgloss-style); banner(), gradient_text(), perimeter helpers
-├── themes.py           # Custom Textual themes: ch-pink (default), ch-night, ch-paper
+├── themes.py           # Custom Textual themes: jg-pink (default), jg-night, jg-paper
 ├── tmux.py             # spawn/spawn_in_dir for AI panes; idempotent on pane title
 ├── notifier.py         # macOS notifications via osascript (with dedupe)
 ├── brainstorm.py       # build_brainstorm_prompt: composes context (recent tickets, components, repos)
 ├── tui.py              # Textual dashboard (1700+ lines — main TUI module)
 └── commands/           # one click command per file
-    ├── auth.py         # ch auth setup/login/logout/status
-    ├── sprint.py       # ch sprint
-    ├── view.py         # ch view <KEY>
-    ├── transition.py   # ch transition <KEY> <status> (fuzzy)
-    ├── assign.py       # ch assign <KEY> @me|user
-    ├── comment.py      # ch comment <KEY> [text]  ('-' for stdin, omit for $EDITOR)
-    ├── edit.py         # ch edit <KEY> --priority/--label/--component/--fixversion/--summary
-    ├── link.py         # ch link <FROM> <type> <TO>
-    ├── create.py       # ch create [-i interactive]
-    ├── search.py       # ch search "<jql>"
-    ├── testcases.py    # ch testcases <KEY> [--edit]  (writes customfield_10186 as ADF)
-    ├── pr.py           # ch pr list/view/review
-    ├── ai.py           # ch ai <KEY> | brainstorm | standup | sprint-review (tmux pane → claude)
-    └── dashboard.py    # ch dashboard
+    ├── auth.py         # jg auth setup/login/logout/status
+    ├── sprint.py       # jg sprint
+    ├── view.py         # jg view <KEY>
+    ├── transition.py   # jg transition <KEY> <status> (fuzzy)
+    ├── assign.py       # jg assign <KEY> @me|user
+    ├── comment.py      # jg comment <KEY> [text]  ('-' for stdin, omit for $EDITOR)
+    ├── edit.py         # jg edit <KEY> --priority/--label/--component/--fixversion/--summary
+    ├── link.py         # jg link <FROM> <type> <TO>
+    ├── create.py       # jg create [-i interactive]
+    ├── search.py       # jg search "<jql>"
+    ├── testcases.py    # jg testcases <KEY> [--edit]  (writes customfield_10186 as ADF)
+    ├── pr.py           # jg pr list/view/review
+    ├── ai.py           # jg ai <KEY> | brainstorm | standup | sprint-review (tmux pane → claude)
+    └── dashboard.py    # jg dashboard
 ```
 
 ## Run / develop
@@ -51,7 +51,7 @@ uv tool install --editable .
 
 # After clone or fresh setup:
 uv sync                  # install deps (incl. dev extras)
-uv run ch dashboard      # run from source without installing
+uv run jg dashboard      # run from source without installing
 uv run pytest -q         # tests (32 passing — pure helpers)
 ```
 
@@ -119,14 +119,14 @@ default_cloud_id = "..."
 default_cloud_url = "https://your-org.atlassian.net"
 
 [ui]
-theme = "ch-pink"           # or ch-night, ch-paper, plus all built-in Textual themes
+theme = "jg-pink"           # or jg-night, jg-paper, plus all built-in Textual themes
 repo_root = "~/DeveloperLocal"
 editor_command = "nvim"
 notifications = true        # macOS notifications
 
 [ai]
 claude_path = "claude"
-default_command = "/issue"  # what `ch ai <KEY>` auto-runs
+default_command = "/issue"  # what `jg ai <KEY>` auto-runs
 
 [tmux]
 enabled = true
@@ -151,7 +151,7 @@ local_path = "~/code/myproject"    # primary, used for project-level e/s/A actio
 ## Critical gotchas (caused real bugs)
 
 1. **Atlassian deprecated `/rest/api/3/search`** (Mar 2025) — use POST `/rest/api/3/search/jql` with JSON body and `nextPageToken` pagination.
-2. **Custom fields like Test Cases (`customfield_10186`)** require ADF. Plain string and `contentFormat: markdown` both fail with "Operation value must be an Atlassian Document". Build ADF directly via `ch.adf.text_to_adf` or `sections_to_adf`.
+2. **Custom fields like Test Cases (`customfield_10186`)** require ADF. Plain string and `contentFormat: markdown` both fail with "Operation value must be an Atlassian Document". Build ADF directly via `jg.adf.text_to_adf` or `sections_to_adf`.
 3. **`gh repo list` only shows OWNER repos** — for org repos, use `gh api graphql` with `viewer.repositories(ownerAffiliations: [OWNER, ORGANIZATION_MEMBER, COLLABORATOR])`.
 4. **`gh api graphql` does NOT substitute `@me`** — only `gh search prs` does. Resolve via `gh api user --jq .login` (cached) before building search queries.
 5. **`gh search prs` does NOT support `reviewDecision`** — only `gh pr list` does. We use GraphQL via `gh api graphql` to get it cross-repo.
@@ -171,8 +171,8 @@ local_path = "~/code/myproject"    # primary, used for project-level e/s/A actio
 
 - New click subcommand → drop a file in `commands/` and register it in `cli.py:_register()`
 - New TUI binding → add to `ChDashboard.BINDINGS` + `action_<name>()` method, update `HelpScreen.HELP`
-- New ADF custom field → add to the `fields=[...]` list in `_reload()` of TicketDetailModal, render via `ch.adf.render_to_text`, write via `editJiraIssue` with `text_to_adf` or hand-built ADF
-- Background notifier on a new event type → add diff logic in `_diff_and_notify_*` in `tui.py`, call `macos_notify(title, message)` from `ch.notifier`
+- New ADF custom field → add to the `fields=[...]` list in `_reload()` of TicketDetailModal, render via `jg.adf.render_to_text`, write via `editJiraIssue` with `text_to_adf` or hand-built ADF
+- Background notifier on a new event type → add diff logic in `_diff_and_notify_*` in `tui.py`, call `macos_notify(title, message)` from `jg.notifier`
 
 ## Tests
 
@@ -183,4 +183,4 @@ Pure helpers tested (`tests/test_adf.py`, `test_render.py`, `test_transition.py`
 - Single Atlassian site + single GitHub identity (no multi-account)
 - Cold start ~1-2 sec (Python + Textual import + first network round-trips). For all-day-running app this is fine; for one-shot CLI ops it's the floor.
 - macOS-only notifications (osascript). Other platforms silently no-op.
-- Token refresh failures show clear "run ch auth login" toast; CLI commands print the same.
+- Token refresh failures show clear "run jg auth login" toast; CLI commands print the same.

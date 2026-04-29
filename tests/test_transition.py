@@ -1,4 +1,4 @@
-from ch.commands.transition import _match_transition, _normalize
+from jg.commands.transition import _match_transition, _normalize
 
 
 def _t(name: str, to_name: str | None = None, id_: str = "1") -> dict:

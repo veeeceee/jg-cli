@@ -15,8 +15,8 @@ import asyncio
 from collections import Counter
 from typing import Any
 
-from ch.api import ApiError, JiraClient
-from ch.config import Config, Project
+from jg.api import ApiError, JiraClient
+from jg.config import Config, Project
 
 
 async def _recent_tickets(api: JiraClient, project: Project | None) -> list[dict[str, Any]]:

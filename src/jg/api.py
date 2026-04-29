@@ -13,8 +13,8 @@ from typing import Any
 
 import httpx
 
-from ch.auth import AuthError, ensure_token, refresh, get_tokens
-from ch.config import Config
+from jg.auth import AuthError, ensure_token, refresh, get_tokens
+from jg.config import Config
 
 
 class ApiError(Exception):

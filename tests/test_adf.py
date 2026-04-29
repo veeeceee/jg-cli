@@ -1,4 +1,4 @@
-from ch.adf import render_to_text, sections_to_adf, text_to_adf
+from jg.adf import render_to_text, sections_to_adf, text_to_adf
 
 
 def test_text_to_adf_paragraph():

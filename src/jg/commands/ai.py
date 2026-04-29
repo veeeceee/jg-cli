@@ -7,10 +7,10 @@ import shlex
 import click
 from rich.console import Console
 
-from ch.brainstorm import build_brainstorm_prompt_sync
-from ch.cli import async_command
-from ch.config import Config
-from ch.tmux import quote_for_shell, spawn
+from jg.brainstorm import build_brainstorm_prompt_sync
+from jg.cli import async_command
+from jg.config import Config
+from jg.tmux import quote_for_shell, spawn
 
 console = Console()
 err = Console(stderr=True)

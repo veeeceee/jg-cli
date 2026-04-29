@@ -1,4 +1,4 @@
-from ch.commands.edit import _normalize_priority, _split_addremove
+from jg.commands.edit import _normalize_priority, _split_addremove
 
 
 def test_normalize_priority_exact():

@@ -1,19 +1,19 @@
-# ch — Jira + GitHub TUI dashboard
+# jg — Jira + GitHub TUI dashboard
 
 Fast, mechanical Jira + GitHub operations from the terminal — with a Textual TUI dashboard and a Claude Code bridge for inferential work.
 
 ## Why
 
-The MCP-server-via-Claude approach is great for inference (drafting test cases, summarizing tickets, picking transitions) but slow for mechanical operations. `ch` splits the layers:
+The MCP-server-via-Claude approach is great for inference (drafting test cases, summarizing tickets, picking transitions) but slow for mechanical operations. `jg` splits the layers:
 
 - **Mechanical** (sub-second, no LLM) — list, transition, assign, comment, search, dashboard
-- **Inferential** (LLM, latency justified) — `ch ai <KEY>` opens a tmux pane with a Claude Code session pre-loaded with ticket context; `ch ai brainstorm` for new-ticket ideation; the Claude MCP server excels at drafting detailed, well-structured tickets from a brief description
+- **Inferential** (LLM, latency justified) — `jg ai <KEY>` opens a tmux pane with a Claude Code session pre-loaded with ticket context; `jg ai brainstorm` for new-ticket ideation; the Claude MCP server excels at drafting detailed, well-structured tickets from a brief description
 
 Same Atlassian OAuth as the Claude MCP server — no API token needed. GitHub via `gh` CLI.
 
 ## Features
 
-**TUI dashboard** (`ch dashboard`)
+**TUI dashboard** (`jg dashboard`)
 - Kanban view (sprint / backlog / all / recent tabs) with per-column semantic gradients
 - Code panel: My PRs, Waiting on Review, Repos list
 - Projects panel scopes both panels by JQL filter + repo list
@@ -26,21 +26,21 @@ Same Atlassian OAuth as the Claude MCP server — no API token needed. GitHub vi
 **CLI commands**
 | Command | What it does |
 |---|---|
-| `ch sprint` | Rich table of current sprint tickets |
-| `ch view <KEY>` | Full ticket detail |
-| `ch transition <KEY> <status>` | Fuzzy-match transition |
-| `ch assign <KEY> @me\|user` | Assign ticket |
-| `ch comment <KEY>` | Add comment (`-` for stdin, omit for `$EDITOR`) |
-| `ch edit <KEY>` | Edit priority, labels, components, fix-version, summary |
-| `ch link <FROM> <type> <TO>` | Create issue link |
-| `ch create [-i]` | Create ticket (interactive mode with `-i`) |
-| `ch search "<jql>"` | Run a JQL search |
-| `ch testcases <KEY>` | View/edit test cases (ADF custom field) |
-| `ch pr list/view/review` | List / view / review PRs via `gh` |
-| `ch ai <KEY>` | Open Claude Code tmux pane for a ticket |
-| `ch ai brainstorm` | Open brainstorm session with project context |
-| `ch ai standup` | Generate standup summary |
-| `ch auth setup/login/logout/status` | Atlassian OAuth management |
+| `jg sprint` | Rich table of current sprint tickets |
+| `jg view <KEY>` | Full ticket detail |
+| `jg transition <KEY> <status>` | Fuzzy-match transition |
+| `jg assign <KEY> @me\|user` | Assign ticket |
+| `jg comment <KEY>` | Add comment (`-` for stdin, omit for `$EDITOR`) |
+| `jg edit <KEY>` | Edit priority, labels, components, fix-version, summary |
+| `jg link <FROM> <type> <TO>` | Create issue link |
+| `jg create [-i]` | Create ticket (interactive mode with `-i`) |
+| `jg search "<jql>"` | Run a JQL search |
+| `jg testcases <KEY>` | View/edit test cases (ADF custom field) |
+| `jg pr list/view/review` | List / view / review PRs via `gh` |
+| `jg ai <KEY>` | Open Claude Code tmux pane for a ticket |
+| `jg ai brainstorm` | Open brainstorm session with project context |
+| `jg ai standup` | Generate standup summary |
+| `jg auth setup/login/logout/status` | Atlassian OAuth management |
 
 ## Requirements
 
@@ -69,14 +69,14 @@ uv tool install --editable /path/to/ch-cli
 ### 3. Configure
 
 ```bash
-ch auth setup    # walks through OAuth app registration + first login
+jg auth setup    # walks through OAuth app registration + first login
 ```
 
-This writes `~/.config/ch/config.toml`. Secrets (tokens) go to macOS Keychain.
+This writes `~/.config/jg/config.toml`. Secrets (tokens) go to macOS Keychain.
 
 ### 4. Add projects (optional but recommended)
 
-Edit `~/.config/ch/config.toml`:
+Edit `~/.config/jg/config.toml`:
 
 ```toml
 [[projects]]
@@ -102,8 +102,8 @@ This lets the dashboard detect when you switch back to it and refresh tickets au
 ## Running
 
 ```bash
-ch dashboard          # open TUI
-uv run ch dashboard   # run from source without installing
+jg dashboard          # open TUI
+uv run jg dashboard   # run from source without installing
 ```
 
 ## Dashboard keybindings
@@ -135,7 +135,7 @@ ctrl+p        Command palette (includes theme cycle)
 uv sync                          # install deps including dev extras
 uv run pytest -q                 # run tests
 uv run ruff check src/           # lint
-uv run textual run src/ch/tui.py # run TUI with Textual devtools
+uv run textual run src/jg/tui.py # run TUI with Textual devtools
 ```
 
 ## Known constraints

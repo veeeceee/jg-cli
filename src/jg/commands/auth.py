@@ -6,8 +6,8 @@ import click
 from rich.console import Console
 from rich.panel import Panel
 
-from ch import auth as auth_lib
-from ch.config import Config
+from jg import auth as auth_lib
+from jg.config import Config
 
 console = Console()
 err = Console(stderr=True)

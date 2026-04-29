@@ -3,8 +3,8 @@
 Two custom themes, both with the soft-pastel + rounded-borders aesthetic that
 the Charm/lipgloss/bubbletea ecosystem popularized:
 
-- ch-pink — Charm hot-pink accent on a near-black background. Default.
-- ch-night — Tokyo-night flavored, cooler purple/blue accents.
+- jg-pink — Charm hot-pink accent on a near-black background. Default.
+- jg-night — Tokyo-night flavored, cooler purple/blue accents.
 
 Themes are registered with the App via App.register_theme() at startup.
 """
@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from textual.theme import Theme
 
-CH_PINK = Theme(
-    name="ch-pink",
+JG_PINK = Theme(
+    name="jg-pink",
     primary="#ff5bc0",       # Charm hot pink
     secondary="#bd93f9",     # soft purple
     accent="#ff79c6",
@@ -40,8 +40,8 @@ CH_PINK = Theme(
     },
 )
 
-CH_NIGHT = Theme(
-    name="ch-night",
+JG_NIGHT = Theme(
+    name="jg-night",
     primary="#7aa2f7",
     secondary="#bb9af7",
     accent="#7dcfff",
@@ -67,8 +67,8 @@ CH_NIGHT = Theme(
     },
 )
 
-CH_PAPER = Theme(
-    name="ch-paper",
+JG_PAPER = Theme(
+    name="jg-paper",
     primary="#d33682",
     secondary="#6c71c4",
     accent="#cb4b16",
@@ -89,4 +89,4 @@ CH_PAPER = Theme(
     },
 )
 
-ALL_THEMES = [CH_PINK, CH_NIGHT, CH_PAPER]
+ALL_THEMES = [JG_PINK, JG_NIGHT, JG_PAPER]

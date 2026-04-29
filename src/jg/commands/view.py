@@ -10,13 +10,13 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 
-from ch.adf import render_to_text
-from ch.api import ApiError, JiraClient
-from ch.auth import AuthError
-from ch.cli import async_command
-from ch.config import Config
-from ch.github import GhError, gh_available, prs_mentioning
-from ch.render import priority_badge, relative_time, status_badge, truncate, type_badge
+from jg.adf import render_to_text
+from jg.api import ApiError, JiraClient
+from jg.auth import AuthError
+from jg.cli import async_command
+from jg.config import Config
+from jg.github import GhError, gh_available, prs_mentioning
+from jg.render import priority_badge, relative_time, status_badge, truncate, type_badge
 
 console = Console()
 err = Console(stderr=True)

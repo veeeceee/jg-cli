@@ -1,4 +1,4 @@
-from ch.gradient import banner, gradient_text, hex_to_rgb, lerp, rgb_to_hex
+from jg.gradient import banner, gradient_text, hex_to_rgb, lerp, rgb_to_hex
 
 
 def test_hex_to_rgb_roundtrip():
@@ -32,5 +32,5 @@ def test_gradient_multistop():
 
 
 def test_banner_returns_text():
-    b = banner("ch", palette="charm")
-    assert b.plain == "ch"
+    b = banner("jg", palette="charm")
+    assert b.plain == "jg"

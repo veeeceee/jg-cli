@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from ch.config import Config
+from jg.config import Config
 
 
 @click.command()
@@ -12,6 +12,6 @@ from ch.config import Config
 def dashboard(ctx: click.Context) -> None:
     """Open the TUI dashboard (kanban + PR sidebar)."""
     config: Config = ctx.obj["config"]
-    from ch.tui import run_dashboard
+    from jg.tui import run_dashboard
 
     run_dashboard(config)

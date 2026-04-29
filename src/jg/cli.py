@@ -10,8 +10,8 @@ from typing import Any, Callable
 import click
 from rich.console import Console
 
-from ch import __version__
-from ch.config import Config
+from jg import __version__
+from jg.config import Config
 
 console = Console()
 err_console = Console(stderr=True)
@@ -31,7 +31,7 @@ def async_command(f: Callable[..., Any]) -> Callable[..., Any]:
     context_settings={"help_option_names": ["-h", "--help"]},
     invoke_without_command=True,
 )
-@click.version_option(__version__, prog_name="ch")
+@click.version_option(__version__, prog_name="jg")
 @click.pass_context
 def cli(ctx: click.Context) -> None:
     """ch — fast Jira + GitHub CLI with TUI dashboard and Claude Code bridge."""
@@ -43,7 +43,7 @@ def cli(ctx: click.Context) -> None:
 
 # Register subcommand groups lazily to keep startup fast.
 def _register() -> None:
-    from ch.commands import auth, sprint, view, transition, assign, comment, edit, link, create, search, testcases, ai, pr, dashboard
+    from jg.commands import auth, sprint, view, transition, assign, comment, edit, link, create, search, testcases, ai, pr, dashboard
 
     cli.add_command(auth.auth)
     cli.add_command(sprint.sprint)

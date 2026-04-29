@@ -7,10 +7,10 @@ import re
 import click
 from rich.console import Console
 
-from ch.api import ApiError, JiraClient
-from ch.auth import AuthError
-from ch.cli import async_command
-from ch.config import Config
+from jg.api import ApiError, JiraClient
+from jg.auth import AuthError
+from jg.cli import async_command
+from jg.config import Config
 
 console = Console()
 err = Console(stderr=True)

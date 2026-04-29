@@ -1,6 +1,6 @@
-"""Config loading + saving for ch.
+"""Config loading + saving for jg.
 
-Config file lives at ~/.config/ch/config.toml. Holds non-secret values:
+Config file lives at ~/.config/jg/config.toml. Holds non-secret values:
 OAuth client_id, scopes, default cloudId, default project, tmux preferences.
 Secrets (client_secret, access_token, refresh_token) live in macOS Keychain.
 """
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import tomli_w
 
-CONFIG_DIR = Path.home() / ".config" / "ch"
+CONFIG_DIR = Path.home() / ".config" / "jg"
 CONFIG_PATH = CONFIG_DIR / "config.toml"
 
 DEFAULT_SCOPES = [
@@ -39,7 +39,7 @@ class AIConfig:
 
 @dataclass
 class UIConfig:
-    theme: str = "ch-pink"  # registered Textual theme
+    theme: str = "jg-pink"  # registered Textual theme
     repo_root: str = "~/DeveloperLocal"  # fallback search root for un-mapped repos
     editor_command: str = "nvim"  # used when opening repos in tmux
     notifications: bool = True  # macOS notifications on new PRs/tickets
@@ -167,7 +167,7 @@ class Config:
                 default_command=ai_raw.get("default_command", "/issue"),
             ),
             ui=UIConfig(
-                theme=ui_raw.get("theme", "ch-pink"),
+                theme=ui_raw.get("theme", "jg-pink"),
                 repo_root=ui_raw.get("repo_root", "~/DeveloperLocal"),
                 editor_command=ui_raw.get("editor_command", "nvim"),
                 notifications=ui_raw.get("notifications", True),

@@ -38,8 +38,8 @@ import subprocess
 import tempfile
 import time
 
-from ch import _compat as _ch_compat
-_ch_compat.apply()
+from jg import _compat as _jg_compat
+_jg_compat.apply()
 from functools import partial
 from typing import Any
 
@@ -68,13 +68,13 @@ from textual.widgets import (
     TextArea,
 )
 
-from ch.adf import render_to_text, text_to_adf
-from ch.api import ApiError, JiraClient
-from ch.auth import AuthError
-from ch.brainstorm import build_brainstorm_prompt
-from ch.config import Config, Project
-from ch.github import GhError, my_open_prs, my_repos, pr_detail, repo_detail, repo_pulse, review_requested_prs
-from ch.render import (
+from jg.adf import render_to_text, text_to_adf
+from jg.api import ApiError, JiraClient
+from jg.auth import AuthError
+from jg.brainstorm import build_brainstorm_prompt
+from jg.config import Config, Project
+from jg.github import GhError, my_open_prs, my_repos, pr_detail, repo_detail, repo_pulse, review_requested_prs
+from jg.render import (
     GROUP_STYLE,
     PRIORITY_ABBR,
     TYPE_ABBR,
@@ -82,7 +82,7 @@ from ch.render import (
     relative_time,
     truncate,
 )
-from ch.gradient import (
+from jg.gradient import (
     banner,
     gradient_box,
     gradient_edge,
@@ -91,9 +91,9 @@ from ch.gradient import (
     hatch_block,
     hex_to_rgb,
 )
-from ch.notifier import notify as macos_notify
-from ch.themes import ALL_THEMES
-from ch.tmux import quote_for_shell, spawn, spawn_in_dir
+from jg.notifier import notify as macos_notify
+from jg.themes import ALL_THEMES
+from jg.tmux import quote_for_shell, spawn, spawn_in_dir
 
 
 GROUPS_TO_SHOW = ["To Do", "In Progress", "In Review", "Building", "In Testing", "Ready for Production", "Done"]
@@ -2016,7 +2016,7 @@ class GradientPanel(Vertical):
 
 
 def _pcolor(idx: int, perimeter: int, stops: list[tuple[int, int, int]]) -> str:
-    from ch.gradient import perimeter_color
+    from jg.gradient import perimeter_color
     return perimeter_color(idx, perimeter, stops)
 
 
@@ -2369,7 +2369,7 @@ class ChDashboard(App):
             projects_children: list[Any] = [self.project_list]
             if not self.config.projects:
                 projects_children.append(Static(
-                    "[dim]No projects defined.\nAdd [[projects]] blocks to\n~/.config/ch/config.toml.[/]",
+                    "[dim]No projects defined.\nAdd [[projects]] blocks to\n~/.config/jg/config.toml.[/]",
                     id="projects-empty-hint",
                     markup=True,
                 ))
@@ -2442,7 +2442,7 @@ class ChDashboard(App):
 
 
     def on_mount(self) -> None:
-        self.title = "ch"
+        self.title = "jg"
         self.sub_title = "kanban · PRs · repos"
         for t in ALL_THEMES:
             try:
@@ -3704,9 +3704,9 @@ class ChDashboard(App):
         self.notify(f"opened shell in {item.local_clone}", severity="information")
 
     THEMES = [
-        "ch-pink",
-        "ch-night",
-        "ch-paper",
+        "jg-pink",
+        "jg-night",
+        "jg-paper",
         "textual-dark",
         "textual-light",
         "nord",
@@ -3722,7 +3722,7 @@ class ChDashboard(App):
         try:
             current = self.theme  # type: ignore[attr-defined]
         except Exception:
-            current = "ch-pink"
+            current = "jg-pink"
         try:
             idx = self.THEMES.index(current)
         except ValueError:

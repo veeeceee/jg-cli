@@ -27,7 +27,7 @@ from typing import Any
 import httpx
 import keyring
 
-from ch.config import Config
+from jg.config import Config
 
 KEYRING_SERVICE = "ch-cli"
 KEY_CLIENT_SECRET = "atlassian.client_secret"

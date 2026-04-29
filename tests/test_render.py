@@ -1,4 +1,4 @@
-from ch.render import normalize_status, priority_badge, relative_time, truncate, type_badge
+from jg.render import normalize_status, priority_badge, relative_time, truncate, type_badge
 
 
 def test_normalize_status_aliases():
