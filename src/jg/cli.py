@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections.abc import Callable
 from functools import wraps
-from typing import Any, Callable
+from typing import Any
 
 import click
 from rich.console import Console
@@ -43,7 +44,22 @@ def cli(ctx: click.Context) -> None:
 
 # Register subcommand groups lazily to keep startup fast.
 def _register() -> None:
-    from jg.commands import auth, sprint, view, transition, assign, comment, edit, link, create, search, testcases, ai, pr, dashboard
+    from jg.commands import (
+        ai,
+        assign,
+        auth,
+        comment,
+        create,
+        dashboard,
+        edit,
+        link,
+        pr,
+        search,
+        sprint,
+        testcases,
+        transition,
+        view,
+    )
 
     cli.add_command(auth.auth)
     cli.add_command(sprint.sprint)

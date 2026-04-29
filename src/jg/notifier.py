@@ -40,7 +40,7 @@ def notify(title: str, message: str, subtitle: str = "") -> None:
     while _RECENT and now - _RECENT[0][0] > DEDUPE_SECONDS:
         _RECENT.popleft()
     sig = (title, message)
-    for ts, t, m in _RECENT:
+    for _ts, t, m in _RECENT:
         if (t, m) == sig:
             return
     _RECENT.append((now, title, message))

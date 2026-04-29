@@ -67,13 +67,13 @@ author { login }
 repository { nameWithOwner }
 """
 
-_GQL_SEARCH_QUERY = """
-query($q: String!, $n: Int!) {
-  search(type: ISSUE, query: $q, first: $n) {
-    nodes { ... on PullRequest { %s } }
-  }
-}
-""" % _PR_FIELDS_GQL
+_GQL_SEARCH_QUERY = f"""
+query($q: String!, $n: Int!) {{
+  search(type: ISSUE, query: $q, first: $n) {{
+    nodes {{ ... on PullRequest {{ {_PR_FIELDS_GQL} }} }}
+  }}
+}}
+"""
 
 
 def _gql_search(query: str, limit: int) -> list[dict[str, Any]]:

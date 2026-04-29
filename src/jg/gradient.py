@@ -20,7 +20,7 @@ def rgb_to_hex(r: int, g: int, b: int) -> str:
 
 
 def lerp(a: int, b: int, t: float) -> int:
-    return int(round(a + (b - a) * t))
+    return round(a + (b - a) * t)
 
 
 def gradient_text(
@@ -140,7 +140,7 @@ def gradient_vline(height: int, indices: list[int], perimeter: int, stops: list[
 
 
 def gradient_box(width: int, height: int, *stops: str) -> Text:
-    """Render a `width × height` empty box with a gradient-colored border.
+    """Render a `width x height` empty box with a gradient-colored border.
 
     Returns a Text with each border character individually styled by interpolating
     `stops` clockwise around the perimeter. Inner area is spaces (transparent
@@ -166,10 +166,13 @@ def gradient_box(width: int, height: int, *stops: str) -> Text:
     out = Text()
     # Top edge: ╭───╮
     pos = 0
-    out.append("╭", style=f"{color_for(pos)} bold"); pos += 1
+    out.append("╭", style=f"{color_for(pos)} bold")
+    pos += 1
     for _ in range(width - 2):
-        out.append("─", style=f"{color_for(pos)} bold"); pos += 1
-    out.append("╮", style=f"{color_for(pos)} bold"); pos += 1
+        out.append("─", style=f"{color_for(pos)} bold")
+        pos += 1
+    out.append("╮", style=f"{color_for(pos)} bold")
+    pos += 1
     out.append("\n")
     # Sides
     for _ in range(height - 2):

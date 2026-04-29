@@ -14,7 +14,6 @@ of expiry. Refresh failures bubble up so callers can prompt re-login.
 from __future__ import annotations
 
 import http.server
-import json
 import secrets
 import socket
 import threading
@@ -93,10 +92,10 @@ def clear_tokens() -> None:
 
 
 class _CallbackHandler(http.server.BaseHTTPRequestHandler):
-    captured: dict[str, str] = {}
+    captured: dict[str, str] = {}  # noqa: RUF012
     expected_state: str = ""
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path != "/callback":
             self.send_response(404)

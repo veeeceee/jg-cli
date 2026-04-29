@@ -37,20 +37,17 @@ import os
 import subprocess
 import tempfile
 import time
-
-from jg import _compat as _jg_compat
-_jg_compat.apply()
 from functools import partial
 from typing import Any
 
 from rich.text import Text
 from textual import events, on, work
-from textual.app import App, ComposeResult, SystemCommand
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Horizontal, HorizontalScroll, Vertical, VerticalScroll
 from textual.reactive import reactive
-from textual.screen import ModalScreen, Screen
+from textual.screen import ModalScreen
 from textual.widgets import (
     Footer,
     Header,
@@ -58,7 +55,6 @@ from textual.widgets import (
     Label,
     ListItem,
     ListView,
-    LoadingIndicator,
     Markdown,
     Static,
     Tab,
@@ -68,33 +64,38 @@ from textual.widgets import (
     TextArea,
 )
 
+from jg import _compat as _jg_compat
 from jg.adf import render_to_text, text_to_adf
 from jg.api import ApiError, JiraClient
 from jg.auth import AuthError
 from jg.brainstorm import build_brainstorm_prompt
 from jg.config import Config, Project
-from jg.github import GhError, my_open_prs, my_repos, pr_detail, repo_detail, repo_pulse, review_requested_prs
+from jg.github import (
+    GhError,
+    my_open_prs,
+    my_repos,
+    pr_detail,
+    repo_detail,
+    repo_pulse,
+    review_requested_prs,
+)
+from jg.gradient import (
+    banner,
+    gradient_text,
+    hex_to_rgb,
+)
+from jg.notifier import notify as macos_notify
 from jg.render import (
     GROUP_STYLE,
     PRIORITY_ABBR,
     TYPE_ABBR,
     normalize_status,
     relative_time,
-    truncate,
 )
-from jg.gradient import (
-    banner,
-    gradient_box,
-    gradient_edge,
-    gradient_text,
-    gradient_vline,
-    hatch_block,
-    hex_to_rgb,
-)
-from jg.notifier import notify as macos_notify
 from jg.themes import ALL_THEMES
 from jg.tmux import quote_for_shell, spawn, spawn_in_dir
 
+_jg_compat.apply()  # patch UTF-8 decoder before Textual driver starts
 
 GROUPS_TO_SHOW = ["To Do", "In Progress", "In Review", "Building", "In Testing", "Ready for Production", "Done"]
 
@@ -212,7 +213,7 @@ class _SidebarTabs(Vertical):
     _SidebarTabs { width: 1fr; height: 1fr; background: transparent; }
     """
 
-    def __init__(self, mine_pr: "PRList", rr_pr: "PRList", repo_list: "RepoList"):
+    def __init__(self, mine_pr: PRList, rr_pr: PRList, repo_list: RepoList):
         super().__init__()
         self._mine_pr = mine_pr
         self._rr_pr = rr_pr
@@ -483,7 +484,7 @@ class TransitionModal(ModalScreen[str | None]):
     TransitionModal #title { text-style: bold; }
     """
 
-    BINDINGS = [Binding("escape", "dismiss", "cancel", show=False)]
+    BINDINGS = [Binding("escape", "dismiss", "cancel", show=False)]  # noqa: RUF012
 
     def __init__(self, transitions: list[dict]):
         super().__init__()
@@ -535,7 +536,7 @@ class AIDirPickerModal(ModalScreen[str | None]):
     AIDirPickerModal #hint { color: $text-muted; height: 1; padding: 0 1; }
     """
 
-    BINDINGS = [
+    BINDINGS = [  # noqa: RUF012
         Binding("escape", "dismiss", "cancel", show=False),
         Binding("down", "focus_list", "down to list", show=False),
     ]
@@ -643,7 +644,7 @@ class CommentModal(ModalScreen[str | None]):
     CommentModal #hint { color: $text-muted; height: 1; }
     """
 
-    BINDINGS = [
+    BINDINGS = [  # noqa: RUF012
         Binding("escape", "cancel", "cancel", show=False),
         Binding("ctrl+s", "submit", "submit", show=True),
         Binding("ctrl+e", "open_editor", "$EDITOR", show=True),
@@ -705,7 +706,7 @@ class AssignModal(ModalScreen[str | None]):
     }
     """
 
-    BINDINGS = [Binding("escape", "cancel", "cancel", show=False)]
+    BINDINGS = [Binding("escape", "cancel", "cancel", show=False)]  # noqa: RUF012
 
     def compose(self) -> ComposeResult:
         yield GradientPanel(panel_title="Assign to")
@@ -743,7 +744,7 @@ class _SummaryEdit(ModalScreen[str | None]):
         height: 7;
     }
     """
-    BINDINGS = [Binding("escape", "cancel", "cancel", show=False)]
+    BINDINGS = [Binding("escape", "cancel", "cancel", show=False)]  # noqa: RUF012
 
     def __init__(self, current: str):
         super().__init__()
@@ -785,7 +786,7 @@ class _LabelsEdit(ModalScreen[list[str] | None]):
         height: 7;
     }
     """
-    BINDINGS = [Binding("escape", "cancel", "cancel", show=False)]
+    BINDINGS = [Binding("escape", "cancel", "cancel", show=False)]  # noqa: RUF012
 
     def __init__(self, current: list[str]):
         super().__init__()
@@ -896,7 +897,7 @@ class TicketDetailModal(ModalScreen[None]):
     }
     """
 
-    BINDINGS = [
+    BINDINGS = [  # noqa: RUF012
         Binding("escape", "close", "close", show=False),
         Binding("q", "close", "close", show=False),
         Binding("r", "refresh", "refresh", show=True),
@@ -968,7 +969,7 @@ class TicketDetailModal(ModalScreen[None]):
                 )
         except AuthError as e:
             if e.needs_relogin:
-                self.app.notify(f"⚠ session expired — run ch auth login", severity="error", timeout=15)
+                self.app.notify("⚠ session expired — run ch auth login", severity="error", timeout=15)
             else:
                 self.app.notify(f"auth error: {e}", severity="error")
             return
@@ -1151,7 +1152,7 @@ class TicketDetailModal(ModalScreen[None]):
         except ApiError as e:
             self.app.notify(f"transition failed: {e}", severity="error")
             return
-        self.app.notify(f"✓ transitioned", severity="information")
+        self.app.notify("✓ transitioned", severity="information")
         await self._reload()
 
     def action_do_assign(self) -> None:
@@ -1201,7 +1202,7 @@ class TicketDetailModal(ModalScreen[None]):
         except ApiError as e:
             self.app.notify(f"comment failed: {e}", severity="error")
             return
-        self.app.notify(f"✓ commented", severity="information")
+        self.app.notify("✓ commented", severity="information")
         await self._reload()
 
     def action_edit_summary(self) -> None:
@@ -1406,7 +1407,7 @@ class PRDetailModal(ModalScreen[None]):
     }
     """
 
-    BINDINGS = [
+    BINDINGS = [  # noqa: RUF012
         Binding("escape,q", "close", "close", show=False),
         Binding("o", "open_browser", "browser", show=True),
         Binding("A", "claude_review", "claude review", show=True),
@@ -1464,7 +1465,7 @@ class PRDetailModal(ModalScreen[None]):
         changed = d.get("changedFiles", 0)
         adds = d.get("additions", 0)
         dels = d.get("deletions", 0)
-        labels = ", ".join(l.get("name", "") for l in (d.get("labels") or [])) or "—"
+        labels = ", ".join(lbl.get("name", "") for lbl in (d.get("labels") or [])) or "—"
 
         await self.body.remove_children()
         # ── Metadata box ──
@@ -1631,7 +1632,7 @@ class RepoDetailModal(ModalScreen[None]):
     RepoDetailModal #footer-close { color: $text-muted; }
     """
 
-    BINDINGS = [
+    BINDINGS = [  # noqa: RUF012
         Binding("escape,q", "close", "close", show=False),
         Binding("o", "open_browser", "browser", show=True),
         Binding("e", "open_editor", "editor", show=True),
@@ -2036,9 +2037,9 @@ class HelpScreen(ModalScreen[None]):
     }
     """
 
-    BINDINGS = [Binding("escape,question_mark,q", "dismiss_close", "close", show=False)]
+    BINDINGS = [Binding("escape,question_mark,q", "dismiss_close", "close", show=False)]  # noqa: RUF012
 
-    HELP = [
+    HELP = [  # noqa: RUF012
         ("h / l / ←→", "cycle Projects → Kanban cols → Sidebar"),
         ("j / k / ↑↓", "navigate within column / list"),
         ("enter (project)", "set project filter · scopes kanban + PRs + repos"),
@@ -2278,7 +2279,7 @@ class ChDashboard(App):
     #projects-panel.-narrow-hidden { display: none; }
     """
 
-    BINDINGS = [
+    BINDINGS = [  # noqa: RUF012
         Binding("q", "quit", "quit", priority=True, show=True),
         Binding("r", "refresh", "refresh", show=True),
         Binding("h", "focus_prev_col", "←", show=False),
@@ -2410,17 +2411,17 @@ class ChDashboard(App):
         out = Text()
         # Brand prefix — uses the reserved chrome gradient (gold/amber) so it
         # doesn't collide with any kanban column.
-        out.append_text(gradient_text("ch ", *CHROME_GRADIENT, bold=True))
+        out.append_text(gradient_text("jg ", *CHROME_GRADIENT, bold=True))
         out.append(" · ", style="dim")
         # Narrow-mode picker shows just the brand + a hint; detail mode shows
-        # a project › detail breadcrumb with esc-to-back.
+        # a project > detail breadcrumb with esc-to-back.
         if self.width_bucket == "narrow" and self.narrow_view == "picker":
             out.append("pick a project ", style="dim")
             out.append("(enter)", style="dim")
             return out
         if self.width_bucket == "narrow" and self.narrow_view == "detail":
             out.append_text(gradient_text(self.current_project_name, *CHROME_GRADIENT, bold=True))
-            out.append(" › ", style="dim")
+            out.append(" › ", style="dim")  # noqa: RUF001
             detail_label = "Tickets" if self.active_detail == "kanban" else "Code"
             out.append_text(gradient_text(detail_label, *CHROME_GRADIENT, bold=True))
             out.append("    ", style="dim")
@@ -2638,7 +2639,7 @@ class ChDashboard(App):
         except AuthError as e:
             self._notify_auth_error(e)
             if self.status:
-                self.status.update(f"[red]auth error — run ch auth login[/]")
+                self.status.update("[red]auth error — run ch auth login[/]")
             return
         except Exception as e:
             if self.status:
@@ -2662,7 +2663,7 @@ class ChDashboard(App):
             out.append(f" {self.last_refresh} ({age // 60}m ago)  ", style="dim")
         else:
             out.append_text(gradient_text("●", "#7be77b", "#50fa7b", bold=True))
-            out.append(f" refreshed ", style="dim")
+            out.append(" refreshed ", style="dim")
             out.append_text(gradient_text(self.last_refresh, "#7be77b", "#8be9fd", bold=True))
             out.append("  ")
         out.append("· ", style="dim")
@@ -3703,7 +3704,7 @@ class ChDashboard(App):
             return
         self.notify(f"opened shell in {item.local_clone}", severity="information")
 
-    THEMES = [
+    THEMES = [  # noqa: RUF012
         "jg-pink",
         "jg-night",
         "jg-paper",

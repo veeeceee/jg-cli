@@ -117,8 +117,8 @@ def status(ctx: click.Context) -> None:
         if remaining > 0:
             console.print(f"  access_token:     [green]valid[/] ({remaining}s remaining)")
         else:
-            console.print(f"  access_token:     [yellow]expired[/] (auto-refreshes on next call)")
-        console.print(f"  refresh_token:    [green]present[/]")
+            console.print("  access_token:     [yellow]expired[/] (auto-refreshes on next call)")
+        console.print("  refresh_token:    [green]present[/]")
     else:
         console.print("  tokens:           [red]not logged in[/]")
     console.print(f"  default_cloud_id: {config.default_cloud_id or '[yellow]not set[/]'}")

@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from jg.auth import AuthError, ensure_token, refresh, get_tokens
+from jg.auth import AuthError, ensure_token, get_tokens, refresh
 from jg.config import Config
 
 

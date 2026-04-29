@@ -45,8 +45,8 @@ def _summarize_facets(issues: list[dict[str, Any]]) -> dict[str, list[tuple[str,
         for c in f.get("components") or []:
             if name := c.get("name"):
                 components[name] += 1
-        for l in f.get("labels") or []:
-            labels[l] += 1
+        for lbl in f.get("labels") or []:
+            labels[lbl] += 1
     return {
         "types": types.most_common(5),
         "components": components.most_common(5),
