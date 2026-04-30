@@ -24,8 +24,48 @@ def test_render_to_text_basic():
     doc = text_to_adf("Hi\n\n- one\n- two")
     rendered = render_to_text(doc)
     assert "Hi" in rendered
-    assert "• one" in rendered
-    assert "• two" in rendered
+    assert "- one" in rendered
+    assert "- two" in rendered
+
+
+def test_render_table():
+    doc = {
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {
+                "type": "table",
+                "content": [
+                    {
+                        "type": "tableRow",
+                        "content": [
+                            {"type": "tableHeader", "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "Tool"}]}
+                            ]},
+                            {"type": "tableHeader", "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "Action"}]}
+                            ]},
+                        ],
+                    },
+                    {
+                        "type": "tableRow",
+                        "content": [
+                            {"type": "tableCell", "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "managePatientAllergies"}]}
+                            ]},
+                            {"type": "tableCell", "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "listAllergies"}]}
+                            ]},
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+    rendered = render_to_text(doc)
+    assert "| Tool | Action |" in rendered
+    assert "|---|---|" in rendered
+    assert "| managePatientAllergies | listAllergies |" in rendered
 
 
 def test_render_to_text_marks():

@@ -34,7 +34,9 @@ def _render_node(node: dict[str, Any], depth: int = 0) -> str:
         prefix = "#" * level
         return f"{prefix} {text}"
     if t == "bulletList":
-        return "\n".join(_render_list_item(c, "• ", depth) for c in content)
+        # Use markdown `-` so Textual's Markdown widget renders as a real list
+        # (it treats `•` as plain text and collapses single newlines to spaces).
+        return "\n".join(_render_list_item(c, "- ", depth) for c in content)
     if t == "orderedList":
         return "\n".join(_render_list_item(c, f"{i + 1}. ", depth) for i, c in enumerate(content))
     if t == "listItem":
@@ -49,6 +51,11 @@ def _render_node(node: dict[str, Any], depth: int = 0) -> str:
         return "---"
     if t == "hardBreak":
         return "\n"
+    if t == "table":
+        return _render_table(content, depth)
+    if t in ("tableRow", "tableCell", "tableHeader"):
+        # Should be consumed by _render_table; if reached standalone, flatten.
+        return " | ".join(_render_node(c, depth).strip() for c in content)
     if t == "text":
         text = node.get("text", "")
         for mark in node.get("marks") or []:
@@ -77,6 +84,29 @@ def _render_list_item(item: dict[str, Any], marker: str, depth: int) -> str:
     out = [f"{indent}{marker}{lines[0]}"]
     for line in lines[1:]:
         out.append(f"{indent}  {line}")
+    return "\n".join(out)
+
+
+def _render_table(rows: list[dict[str, Any]], depth: int) -> str:
+    """Render an ADF table as a markdown pipe-table."""
+    if not rows:
+        return ""
+    parsed: list[tuple[bool, list[str]]] = []  # (is_header_row, cells)
+    for row in rows:
+        cells = row.get("content", []) or []
+        is_header = any(c.get("type") == "tableHeader" for c in cells)
+        rendered = [_render_node(c, depth).strip().replace("\n", " ").replace("|", "\\|") or " "
+                    for c in cells]
+        parsed.append((is_header, rendered))
+    if not parsed:
+        return ""
+    width = max(len(r[1]) for r in parsed)
+    parsed = [(h, r + [" "] * (width - len(r))) for h, r in parsed]
+    out: list[str] = []
+    out.append("| " + " | ".join(parsed[0][1]) + " |")
+    out.append("|" + "|".join(["---"] * width) + "|")
+    for _, cells in parsed[1:]:
+        out.append("| " + " | ".join(cells) + " |")
     return "\n".join(out)
 
 
