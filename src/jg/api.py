@@ -29,7 +29,7 @@ class JiraClient:
         self.config = config
         self.cloud_id = cloud_id or config.default_cloud_id
         if not self.cloud_id:
-            raise AuthError("No cloud_id configured. Run: ch auth login")
+            raise AuthError("No cloud_id configured. Run: jg auth login")
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> JiraClient:
@@ -62,7 +62,7 @@ class JiraClient:
                 self._client.headers["Authorization"] = f"Bearer {tokens.access_token}"
                 resp = await self._client.request(method, path, **kwargs)
             else:
-                raise AuthError("Not logged in. Run: ch auth login")
+                raise AuthError("Not logged in. Run: jg auth login")
         if resp.status_code >= 400:
             raise ApiError(resp.status_code, resp.text)
         if resp.status_code == 204 or not resp.content:
@@ -112,11 +112,16 @@ class JiraClient:
         data = await self._request("GET", f"/rest/api/3/issue/{key}/transitions")
         return data.get("transitions", [])
 
-    async def transition_issue(self, key: str, transition_id: str) -> None:
+    async def transition_issue(
+        self, key: str, transition_id: str, resolution: str | None = None
+    ) -> None:
+        body: dict[str, Any] = {"transition": {"id": transition_id}}
+        if resolution:
+            body["fields"] = {"resolution": {"name": resolution}}
         await self._request(
             "POST",
             f"/rest/api/3/issue/{key}/transitions",
-            json={"transition": {"id": transition_id}},
+            json=body,
         )
 
     # --- Comments ---
@@ -158,3 +163,27 @@ class JiraClient:
     async def find_user(self, query: str) -> list[dict[str, Any]]:
         data = await self._request("GET", "/rest/api/3/user/search", params={"query": query})
         return data if isinstance(data, list) else []
+
+    # --- Agile (sprints, backlog) ---
+    async def get_sprints(self, board_id: str, state: str = "active,future") -> list[dict[str, Any]]:
+        """List sprints on a board. Default state filter excludes closed sprints."""
+        data = await self._request(
+            "GET",
+            f"/rest/agile/1.0/board/{board_id}/sprint",
+            params={"state": state, "maxResults": 50},
+        )
+        return data.get("values", [])
+
+    async def move_to_sprint(self, sprint_id: int, issue_keys: list[str]) -> None:
+        await self._request(
+            "POST",
+            f"/rest/agile/1.0/sprint/{sprint_id}/issue",
+            json={"issues": issue_keys},
+        )
+
+    async def move_to_backlog(self, issue_keys: list[str]) -> None:
+        await self._request(
+            "POST",
+            "/rest/agile/1.0/backlog/issue",
+            json={"issues": issue_keys},
+        )

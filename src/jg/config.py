@@ -20,6 +20,11 @@ DEFAULT_SCOPES = [
     "read:jira-work",
     "write:jira-work",
     "read:jira-user",
+    # Agile (Jira Software) — required for sprint/backlog moves via the Agile API
+    "read:sprint:jira-software",
+    "write:sprint:jira-software",
+    "write:backlog:jira-software",
+    "read:board-scope:jira-software",
     "offline_access",
 ]
 
@@ -58,6 +63,7 @@ class Project:
     repos: list[str] = field(default_factory=list)  # ["owner/name", ...]
     local_path: str = ""    # primary path (used by project-level e/s/A actions)
     repo_paths: dict[str, str] = field(default_factory=dict)  # {"owner/name": "/abs/path"}
+    board_id: str = ""      # Jira board id (numeric, as string) — enables sprint move via `m`
 
     def matches_repo(self, name_with_owner: str) -> bool:
         return name_with_owner in self.repos
@@ -135,6 +141,7 @@ class Config:
                     "repos": p.repos,
                     "local_path": p.local_path,
                     "repo_paths": p.repo_paths,
+                    "board_id": p.board_id,
                 }
                 for p in self.projects
             ]
@@ -179,6 +186,7 @@ class Config:
                     repos=list(p.get("repos") or []),
                     local_path=p.get("local_path", ""),
                     repo_paths=dict(p.get("repo_paths") or {}),
+                    board_id=str(p.get("board_id") or ""),
                 )
                 for p in (data.get("projects") or [])
             ],

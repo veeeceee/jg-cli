@@ -729,6 +729,71 @@ class AssignModal(ModalScreen[str | None]):
         self.dismiss(val)
 
 
+class SprintPickerModal(ModalScreen[tuple[str, int | None] | None]):
+    """Pick a sprint to move a ticket to, or 'Backlog' to move it out of any sprint.
+
+    Returns ("sprint", sprint_id) | ("backlog", None) | None on cancel."""
+
+    DEFAULT_CSS = """
+    SprintPickerModal {
+        align: center middle;
+        background: #000000 97%;
+    }
+    SprintPickerModal GradientPanel {
+        background: #1c1c1e;
+        width: 60;
+        height: auto;
+        max-height: 80%;
+    }
+    SprintPickerModal #hint { color: $text-muted; height: 1; padding: 0 1; }
+    """
+
+    BINDINGS = [Binding("escape", "dismiss", "cancel", show=False)]  # noqa: RUF012
+
+    def __init__(self, key: str, sprints: list[dict]):
+        super().__init__()
+        self.key = key
+        self.sprints = sprints
+
+    def compose(self) -> ComposeResult:
+        yield GradientPanel(panel_title=f"Move {self.key} to…")
+
+    def on_mount(self) -> None:
+        items: list[ListItem] = []
+        for s in self.sprints:
+            row = Text()
+            state = (s.get("state") or "").lower()
+            badge = "active" if state == "active" else "future"
+            row.append(f" {badge} ", style="reverse" if state == "active" else "dim")
+            row.append("  ")
+            row.append_text(gradient_text(s.get("name", "?"), *CHROME_GRADIENT, bold=True))
+            items.append(ListItem(Static(row)))
+        backlog_row = Text()
+        backlog_row.append(" backlog ", style="dim reverse")
+        backlog_row.append("  ")
+        backlog_row.append("Backlog", style="bold")
+        items.append(ListItem(Static(backlog_row)))
+
+        self.lv = ListView(*items)
+        panel = self.query_one(GradientPanel)
+        panel.mount_content(
+            self.lv,
+            Static("[dim]enter to move · esc to cancel[/]", markup=True, id="hint"),
+        )
+        self.lv.focus()
+
+    @on(ListView.Selected)
+    def selected(self, ev: ListView.Selected) -> None:
+        idx = ev.list_view.index or 0
+        if idx >= len(self.sprints):
+            self.dismiss(("backlog", None))
+        else:
+            self.dismiss(("sprint", int(self.sprints[idx]["id"])))
+
+    def action_dismiss(self) -> None:
+        self.dismiss(None)
+
+
 PRIORITY_CYCLE = ["Highest", "High", "Medium", "Low", "Lowest"]
 
 
@@ -904,6 +969,7 @@ class TicketDetailModal(ModalScreen[None]):
         Binding("t", "do_transition", "transition", show=True),
         Binding("a", "do_assign", "assign", show=True),
         Binding("c", "do_comment", "comment", show=True),
+        Binding("m", "do_move_sprint", "move sprint", show=True),
         Binding("e", "edit_summary", "summary", show=True),
         Binding("d", "edit_description", "description", show=True),
         Binding("T", "edit_testcases", "test cases", show=True),
@@ -1148,7 +1214,13 @@ class TicketDetailModal(ModalScreen[None]):
     async def _apply_transition(self, transition_id: str) -> None:
         try:
             async with JiraClient(self.config) as api:
-                await api.transition_issue(self.key, transition_id)
+                try:
+                    await api.transition_issue(self.key, transition_id)
+                except ApiError as e:
+                    if "resolution" in str(e).lower():
+                        await api.transition_issue(self.key, transition_id, resolution="Done")
+                    else:
+                        raise
         except ApiError as e:
             self.app.notify(f"transition failed: {e}", severity="error")
             return
@@ -1194,6 +1266,52 @@ class TicketDetailModal(ModalScreen[None]):
                 self.run_worker(self._apply_comment(text))
 
         self.app.push_screen(CommentModal(self.key), _on_submit)
+
+    @work(exclusive=True)
+    async def action_do_move_sprint(self) -> None:
+        # Find the project that owns this ticket — match against the dashboard's
+        # current_project first, else any project whose JQL/repos match.
+        proj = getattr(self.app, "current_project", None) or self._project_for_key()
+        if proj is None or not proj.board_id:
+            self.app.notify("no board_id for this project — add to config", severity="warning")
+            return
+        try:
+            async with JiraClient(self.config) as api:
+                sprints = await api.get_sprints(proj.board_id)
+        except ApiError as e:
+            self.app.notify(f"sprints: {e}", severity="error")
+            return
+
+        def _on_pick(choice: tuple[str, int | None] | None) -> None:
+            if choice:
+                self.run_worker(self._apply_move_sprint(choice))
+
+        self.app.push_screen(SprintPickerModal(self.key, sprints), _on_pick)
+
+    def _project_for_key(self) -> Project | None:
+        """Pick the first project whose board_id is set; the API will reject
+        the request if the issue isn't actually on that board."""
+        for p in self.config.projects:
+            if p.board_id:
+                return p
+        return None
+
+    async def _apply_move_sprint(self, choice: tuple[str, int | None]) -> None:
+        kind, sprint_id = choice
+        try:
+            async with JiraClient(self.config) as api:
+                if kind == "backlog":
+                    await api.move_to_backlog([self.key])
+                    label = "Backlog"
+                else:
+                    assert sprint_id is not None
+                    await api.move_to_sprint(sprint_id, [self.key])
+                    label = f"sprint {sprint_id}"
+        except ApiError as e:
+            self.app.notify(f"move failed: {e}", severity="error")
+            return
+        self.app.notify(f"✓ {self.key} → {label}", severity="information")
+        await self._reload()
 
     async def _apply_comment(self, text: str) -> None:
         try:
@@ -2049,6 +2167,7 @@ class HelpScreen(ModalScreen[None]):
         ("esc", "narrow-mode: detail → projects picker"),
         ("enter (item)", "open detail modal (ticket / PR / repo)"),
         ("t / a / c", "transition / assign / comment (ticket-only)"),
+        ("m", "move ticket to sprint or backlog (needs board_id in project config)"),
         ("A", "claude pane: /issue (ticket) · /review (PR) · in dir (repo)"),
         ("E", "editor on focused ticket / PR / repo (ticket shares A's dir cache)"),
         ("ctrl+a / ctrl+e", "re-open dir picker, bypass cached choice"),
@@ -2057,7 +2176,7 @@ class HelpScreen(ModalScreen[None]):
         ("/", "filter cards"),
         ("ctrl+p", "command palette (incl. theme cycle)"),
         ("r", "refresh · ?  this help · q  quit"),
-        ("inside detail modal", "t a c · e summary · d description · T tests · p priority · l labels · o A E"),
+        ("inside detail modal", "t a c m · e summary · d description · T tests · p priority · l labels · o A E"),
         ("claudecode.nvim", "press E (editor) before A (claude) so nvim is up first"),
     ]
 
@@ -2289,6 +2408,7 @@ class ChDashboard(App):
         Binding("t", "transition", "transition", show=True),
         Binding("a", "assign", "assign", show=True),
         Binding("c", "comment", "comment", show=True),
+        Binding("m", "move_sprint", "move sprint", show=True),
         Binding("A", "ai_on_card", "AI", show=True),
         Binding("E", "editor_on_card", "editor", show=True),
         Binding("ctrl+a", "ai_on_card_force", "re-pick AI dir", show=False),
@@ -3162,7 +3282,13 @@ class ChDashboard(App):
     async def _do_transition(self, key: str, transition_id: str) -> None:
         try:
             async with JiraClient(self.config) as api:
-                await api.transition_issue(key, transition_id)
+                try:
+                    await api.transition_issue(key, transition_id)
+                except ApiError as e:
+                    if "resolution" in str(e).lower():
+                        await api.transition_issue(key, transition_id, resolution="Done")
+                    else:
+                        raise
         except ApiError as e:
             self.notify(f"transition failed: {e}", severity="error")
             return
@@ -3206,6 +3332,50 @@ class ChDashboard(App):
             self.notify(f"assign failed: {e}", severity="error")
             return
         self.notify(f"✓ {key} assigned to {name}", severity="information")
+        self._refresh()
+
+    @work(exclusive=True)
+    async def action_move_sprint(self) -> None:
+        card = self._focused_card()
+        if not card:
+            self.notify("focus a ticket first", severity="warning")
+            return
+        proj = self.current_project or self.config.project_for_repo("")  # current_project may be None
+        if proj is None:
+            # fall back: any project that owns this ticket key prefix; otherwise warn
+            self.notify("select a project first (m needs a board)", severity="warning")
+            return
+        if not proj.board_id:
+            self.notify(f"no board_id set for '{proj.name}' — add to config", severity="warning")
+            return
+        try:
+            async with JiraClient(self.config) as api:
+                sprints = await api.get_sprints(proj.board_id)
+        except ApiError as e:
+            self.notify(f"sprints: {e}", severity="error")
+            return
+
+        def _on_pick(choice: tuple[str, int | None] | None) -> None:
+            if choice:
+                self.run_worker(self._do_move_sprint(card.key_label, choice))
+
+        self.push_screen(SprintPickerModal(card.key_label, sprints), _on_pick)
+
+    async def _do_move_sprint(self, key: str, choice: tuple[str, int | None]) -> None:
+        kind, sprint_id = choice
+        try:
+            async with JiraClient(self.config) as api:
+                if kind == "backlog":
+                    await api.move_to_backlog([key])
+                    label = "Backlog"
+                else:
+                    assert sprint_id is not None
+                    await api.move_to_sprint(sprint_id, [key])
+                    label = f"sprint {sprint_id}"
+        except ApiError as e:
+            self.notify(f"move failed: {e}", severity="error")
+            return
+        self.notify(f"✓ {key} → {label}", severity="information")
         self._refresh()
 
     def action_comment(self) -> None:
