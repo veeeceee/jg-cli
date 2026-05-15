@@ -55,8 +55,13 @@ Same Atlassian OAuth as the Claude MCP server — no API token needed. GitHub vi
 ### 1. Install
 
 ```bash
-# Editable install — source edits take effect immediately
-uv tool install --editable /path/to/ch-cli
+# Install from GitHub (just want to use it)
+uv tool install git+https://github.com/veeeceee/jg-cli
+
+# Or, if you're modifying jg-cli itself:
+git clone https://github.com/veeeceee/jg-cli
+cd jg-cli
+uv tool install --editable .
 ```
 
 ### 2. Register an Atlassian OAuth app
