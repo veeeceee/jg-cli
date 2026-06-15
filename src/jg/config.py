@@ -51,6 +51,22 @@ class UIConfig:
 
 
 @dataclass
+class FieldsConfig:
+    """Custom-field id mappings for an instance.
+
+    Empty `story_points` = feature disabled (graceful no-op everywhere).
+    `story_points_type` controls the write shape:
+      - "number" → bare float/int (standard Jira story points)
+      - "select" → {"value": "<n>"} single-select option (e.g. a validated 1-4
+        points field). Allowed values for a select are fetched live from the
+        issue's editmeta at write time, never hardcoded — so a re-scoped option
+        list can't silently drift out of sync with the CLI.
+    """
+    story_points: str = ""
+    story_points_type: str = "number"  # "number" | "select"
+
+
+@dataclass
 class Project:
     """A logical grouping of a JQL filter + repos + a primary local path.
 
@@ -89,6 +105,7 @@ class Config:
     tmux: TmuxConfig = field(default_factory=TmuxConfig)
     ai: AIConfig = field(default_factory=AIConfig)
     ui: UIConfig = field(default_factory=UIConfig)
+    fields: FieldsConfig = field(default_factory=FieldsConfig)
     projects: list[Project] = field(default_factory=list)
 
     def project_for_repo(self, name_with_owner: str) -> Project | None:
@@ -132,6 +149,10 @@ class Config:
                 "editor_command": self.ui.editor_command,
                 "notifications": self.ui.notifications,
             },
+            "fields": {
+                "story_points": self.fields.story_points,
+                "story_points_type": self.fields.story_points_type,
+            },
         }
         if self.projects:
             data["projects"] = [
@@ -157,6 +178,7 @@ class Config:
         tmux_raw = data.get("tmux", {})
         ai_raw = data.get("ai", {})
         ui_raw = data.get("ui", {})
+        fields_raw = data.get("fields", {})
         return cls(
             client_id=data.get("client_id", ""),
             redirect_uri=data.get("redirect_uri", "http://localhost:9876/callback"),
@@ -178,6 +200,10 @@ class Config:
                 repo_root=ui_raw.get("repo_root", "~/DeveloperLocal"),
                 editor_command=ui_raw.get("editor_command", "nvim"),
                 notifications=ui_raw.get("notifications", True),
+            ),
+            fields=FieldsConfig(
+                story_points=fields_raw.get("story_points", ""),
+                story_points_type=fields_raw.get("story_points_type", "number"),
             ),
             projects=[
                 Project(

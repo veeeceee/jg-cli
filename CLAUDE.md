@@ -24,7 +24,7 @@ src/jg/
 ├── themes.py           # Custom Textual themes: jg-pink (default), jg-night, jg-paper
 ├── tmux.py             # spawn/spawn_in_dir for AI panes; idempotent on pane title
 ├── notifier.py         # macOS notifications via osascript (with dedupe)
-├── brainstorm.py       # build_brainstorm_prompt: composes context (recent tickets, components, repos)
+├── brainstorm.py       # build_brainstorm_prompt[_multi]: composes context (recent tickets, components, repos); _multi merges per-project sections for "All projects"
 ├── tui.py              # Textual dashboard (1700+ lines — main TUI module)
 └── commands/           # one click command per file
     ├── auth.py         # jg auth setup/login/logout/status
@@ -37,6 +37,7 @@ src/jg/
     ├── link.py         # jg link <FROM> <type> <TO>
     ├── create.py       # jg create [-i interactive]
     ├── search.py       # jg search "<jql>"
+    ├── points.py       # jg points <KEY> [VALUE]  (configurable story-points field; select-aware)
     ├── testcases.py    # jg testcases <KEY> [--edit]  (writes customfield_10186 as ADF)
     ├── pr.py           # jg pr list/view/review
     ├── ai.py           # jg ai <KEY> | brainstorm | standup | sprint-review (tmux pane → claude)
@@ -94,7 +95,7 @@ Dashboard:
   A             claude pane: /issue (ticket) · /review (PR) · cwd-in-repo (repo)
   E             editor pane on focused ticket / PR / repo (ticket shares A's dir cache)
   ctrl+a/e      bypass cached dir, re-open the picker
-  B             brainstorm new tickets with project context
+  B             brainstorm new tickets with project context (in All mode, pick one project or all via modal)
   o             open in browser
   e/s           (Repos tab) editor / shell in tmux split
   /             filter cards
@@ -127,6 +128,17 @@ notifications = true        # macOS notifications
 [ai]
 claude_path = "claude"
 default_command = "/issue"  # what `jg ai <KEY>` auto-runs
+
+[fields]
+# Story-points field id + type, per-instance. Empty/absent = feature off
+# (sprint SP column hidden, `jg points` prints a config hint).
+story_points = "customfield_10252"   # this org's "Story Points (Validated)"
+story_points_type = "select"          # "select" → writes {"value":"N"}; "number" → bare float
+# For a "select", allowed options (e.g. 1-4) are fetched live from the issue's
+# editmeta and validated before write — an out-of-range value is rejected with
+# a clear message, never sent as a raw 400.
+# Surfaces when set: `jg sprint` SP column, `jg points` (read/write), TUI kanban
+# card chip (◆N next to priority), and the ticket detail modal state line (N pts).
 
 [tmux]
 enabled = true

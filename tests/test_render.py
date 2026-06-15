@@ -1,4 +1,28 @@
-from jg.render import normalize_status, priority_badge, relative_time, truncate, type_badge
+from jg.render import (
+    normalize_status,
+    points_value,
+    priority_badge,
+    relative_time,
+    truncate,
+    type_badge,
+)
+
+
+def test_points_value_select():
+    # single-select option field arrives as {"value": "3"}
+    assert points_value({"cf": {"value": "3"}}, "cf") == "3"
+
+
+def test_points_value_number():
+    # numeric field arrives as a bare float; render as a clean int
+    assert points_value({"cf": 4.0}, "cf") == "4"
+    assert points_value({"cf": 2.5}, "cf") == "2.5"
+
+
+def test_points_value_unset_or_disabled():
+    assert points_value({}, "cf") == ""          # field present in config, no value
+    assert points_value({"cf": None}, "cf") == ""  # explicit null
+    assert points_value({"cf": 4.0}, None) == ""   # feature disabled (no field configured)
 
 
 def test_normalize_status_aliases():

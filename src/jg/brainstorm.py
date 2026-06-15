@@ -54,27 +54,63 @@ def _summarize_facets(issues: list[dict[str, Any]]) -> dict[str, list[tuple[str,
     }
 
 
+_INTRO = [
+    "Help me ideate new tickets. Ask what's on my mind, then shape ideas",
+    "into well-scoped tickets — one summary line plus a draft description,",
+    "acceptance criteria, and a guess at issue type (Bug/Task/Story/Epic).",
+    "Match the style of the recent tickets shown below. Keep momentum;",
+    "we'll polish later. Use /create when I confirm a draft.",
+]
+
+
+def _project_context_lines(project: Project) -> list[str]:
+    """The Filter/Repos/Local-path bullets for one project (no heading)."""
+    lines: list[str] = []
+    if project.jql:
+        lines.append(f"- Filter: `{project.jql}`")
+    if project.repos:
+        lines.append(f"- Repos: {', '.join(project.repos)}")
+    if project.local_path:
+        lines.append(f"- Primary local path: {project.local_path}")
+    return lines
+
+
+def _ticket_and_facet_lines(issues: list[dict[str, Any]], lvl: int) -> list[str]:
+    """Render the 'Recent tickets' + facet sections at heading level `lvl`."""
+    h = "#" * lvl
+    lines: list[str] = [f"{h} Recent {len(issues)} tickets (most recent first)"]
+    for it in issues:
+        f = it.get("fields", {})
+        key = it.get("key", "?")
+        summary = f.get("summary", "")
+        type_name = (f.get("issuetype") or {}).get("name", "?")
+        status = (f.get("status") or {}).get("name", "?")
+        priority = (f.get("priority") or {}).get("name", "?")
+        lines.append(f"- **{key}** [{type_name}/{priority}/{status}] {summary}")
+    lines.append("")
+
+    facets = _summarize_facets(issues)
+    for fkey, title in (("types", "Types in use"), ("components", "Components in use"), ("labels", "Labels in use")):
+        if facets[fkey]:
+            lines.append(f"{h} {title}")
+            for n, c in facets[fkey]:
+                lines.append(f"- {n} ({c})")
+            lines.append("")
+    return lines
+
+
 async def build_brainstorm_prompt(config: Config, project: Project | None) -> str:
-    """Compose a multi-line prompt with project context."""
+    """Compose a multi-line prompt with a single project's context (or unscoped)."""
     lines: list[str] = []
     name = project.name if project else "(any)"
     lines.append(f"# Brainstorm session for {name}")
     lines.append("")
-    lines.append("Help me ideate new tickets. Ask what's on my mind, then shape ideas")
-    lines.append("into well-scoped tickets — one summary line plus a draft description,")
-    lines.append("acceptance criteria, and a guess at issue type (Bug/Task/Story/Epic).")
-    lines.append("Match the style of the recent tickets shown below. Keep momentum;")
-    lines.append("we'll polish later. Use /create when I confirm a draft.")
+    lines.extend(_INTRO)
     lines.append("")
 
     if project:
         lines.append("## Project context")
-        if project.jql:
-            lines.append(f"- Filter: `{project.jql}`")
-        if project.repos:
-            lines.append(f"- Repos: {', '.join(project.repos)}")
-        if project.local_path:
-            lines.append(f"- Primary local path: {project.local_path}")
+        lines.extend(_project_context_lines(project))
         lines.append("")
 
     # Pull recent context from Jira
@@ -89,39 +125,51 @@ async def build_brainstorm_prompt(config: Config, project: Project | None) -> st
         lines.append("_(no recent tickets found)_")
         return "\n".join(lines)
 
-    lines.append(f"## Recent {len(issues)} tickets (most recent first)")
-    for it in issues:
-        f = it.get("fields", {})
-        key = it.get("key", "?")
-        summary = f.get("summary", "")
-        type_name = (f.get("issuetype") or {}).get("name", "?")
-        status = (f.get("status") or {}).get("name", "?")
-        priority = (f.get("priority") or {}).get("name", "?")
-        lines.append(f"- **{key}** [{type_name}/{priority}/{status}] {summary}")
-    lines.append("")
-
-    facets = _summarize_facets(issues)
-    if facets["types"]:
-        lines.append("## Types in use")
-        for n, c in facets["types"]:
-            lines.append(f"- {n} ({c})")
-        lines.append("")
-    if facets["components"]:
-        lines.append("## Components in use")
-        for n, c in facets["components"]:
-            lines.append(f"- {n} ({c})")
-        lines.append("")
-    if facets["labels"]:
-        lines.append("## Labels in use")
-        for n, c in facets["labels"]:
-            lines.append(f"- {n} ({c})")
-        lines.append("")
-
+    lines.extend(_ticket_and_facet_lines(issues, 2))
     lines.append("---")
     lines.append("What's on your mind?")
+    return "\n".join(lines)
+
+
+async def build_brainstorm_prompt_multi(config: Config, projects: list[Project]) -> str:
+    """Compose one brainstorm prompt with merged, per-project context sections."""
+    names = ", ".join(p.name for p in projects)
+    lines: list[str] = ["# Brainstorm session for All projects", ""]
+    lines.extend(_INTRO)
+    lines.append("")
+    lines.append("## Project context")
+    lines.append(f"- Scope: {len(projects)} projects — {names}")
+    lines.append("- Each project's recent tickets and facets are listed under its own heading below.")
+    lines.append("")
+
+    # Pull recent context per project (sequential — one shared client)
+    try:
+        async with JiraClient(config) as api:
+            sections = [(p, await _recent_tickets(api, p)) for p in projects]
+    except Exception as e:
+        lines.append(f"_(could not fetch project context: {e})_")
+        return "\n".join(lines)
+
+    for project, issues in sections:
+        lines.append(f"### {project.name}")
+        lines.extend(_project_context_lines(project))
+        lines.append("")
+        if not issues:
+            lines.append("_(no recent tickets found)_")
+            lines.append("")
+            continue
+        lines.extend(_ticket_and_facet_lines(issues, 4))
+
+    lines.append("---")
+    lines.append("What's on your mind? Tell me which project as you go — I'll match each ticket to the right one.")
     return "\n".join(lines)
 
 
 def build_brainstorm_prompt_sync(config: Config, project: Project | None) -> str:
     """Sync wrapper for CLI invocations."""
     return asyncio.run(build_brainstorm_prompt(config, project))
+
+
+def build_brainstorm_prompt_multi_sync(config: Config, projects: list[Project]) -> str:
+    """Sync wrapper for CLI invocations."""
+    return asyncio.run(build_brainstorm_prompt_multi(config, projects))

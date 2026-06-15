@@ -35,11 +35,16 @@ async def sprint(ctx: click.Context, show_all: bool, project: str | None, as_jso
         clauses.append(f"project = {project}")
     jql = " AND ".join(clauses) + " ORDER BY status ASC, priority DESC, updated DESC"
 
+    sp_field = config.fields.story_points or None
+    fields = ["summary", "status", "priority", "issuetype", "updated"]
+    if sp_field:
+        fields.append(sp_field)
+
     try:
         async with JiraClient(config) as api:
             data = await api.search_jql(
                 jql,
-                fields=["summary", "status", "priority", "issuetype", "updated"],
+                fields=fields,
                 max_results=100,
             )
     except (AuthError, ApiError) as e:
@@ -55,6 +60,6 @@ async def sprint(ctx: click.Context, show_all: bool, project: str | None, as_jso
         console.print("[yellow]No tickets in active sprint.[/]")
         return
 
-    for table in render_sprint_tables(issues):
+    for table in render_sprint_tables(issues, sp_field=sp_field):
         console.print(table)
         console.print()

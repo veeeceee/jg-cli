@@ -53,6 +53,7 @@ def _register() -> None:
         dashboard,
         edit,
         link,
+        points,
         pr,
         search,
         sprint,
@@ -71,6 +72,7 @@ def _register() -> None:
     cli.add_command(link.link)
     cli.add_command(create.create)
     cli.add_command(search.search)
+    cli.add_command(points.points)
     cli.add_command(testcases.testcases)
     cli.add_command(ai.ai)
     cli.add_command(pr.pr)

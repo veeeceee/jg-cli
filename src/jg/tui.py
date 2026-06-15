@@ -68,7 +68,7 @@ from jg import _compat as _jg_compat
 from jg.adf import render_to_text, text_to_adf
 from jg.api import ApiError, JiraClient
 from jg.auth import AuthError
-from jg.brainstorm import build_brainstorm_prompt
+from jg.brainstorm import build_brainstorm_prompt, build_brainstorm_prompt_multi
 from jg.config import Config, Project
 from jg.github import (
     GhError,
@@ -90,6 +90,7 @@ from jg.render import (
     PRIORITY_ABBR,
     TYPE_ABBR,
     normalize_status,
+    points_value,
     relative_time,
 )
 from jg.themes import ALL_THEMES
@@ -131,7 +132,7 @@ GROUP_GRADIENT = {
 
 # ───────────────────────────── card formatting ─────────────────────────────
 
-def _card_text(issue: dict[str, Any]) -> Text:
+def _card_text(issue: dict[str, Any], sp_field: str | None = None) -> Text:
     f = issue["fields"]
     key = issue["key"]
     type_name = (f.get("issuetype") or {}).get("name", "")
@@ -140,6 +141,7 @@ def _card_text(issue: dict[str, Any]) -> Text:
     pri_abbr, pri_color = PRIORITY_ABBR.get(pri_name, ("--", "white"))
     summary = f.get("summary", "") or ""
     updated = relative_time(f.get("updated"))
+    sp = points_value(f, sp_field)
 
     t = Text(no_wrap=False, overflow="fold")
     t.append(f"{key}", style="bold")
@@ -147,6 +149,9 @@ def _card_text(issue: dict[str, Any]) -> Text:
     t.append(type_abbr, style=f"bold {type_color}")
     t.append(" ")
     t.append(pri_abbr, style=pri_color)
+    if sp:
+        t.append("  ")
+        t.append(f"◆{sp}", style="bold cyan")
     t.append("\n")
     t.append(summary)
     t.append("\n")
@@ -190,8 +195,8 @@ def _pr_text(p: dict[str, Any], show_author: bool = False) -> Text:
 # ───────────────────────────── widgets ─────────────────────────────
 
 class TicketCard(ListItem):
-    def __init__(self, issue: dict[str, Any]):
-        super().__init__(Static(_card_text(issue)))
+    def __init__(self, issue: dict[str, Any], sp_field: str | None = None):
+        super().__init__(Static(_card_text(issue, sp_field)))
         self.issue = issue
         self.key_label = issue["key"]
         self.summary = (issue.get("fields") or {}).get("summary", "")
@@ -285,6 +290,7 @@ class KanbanColumn(Vertical):
         self._filter: str = ""
         self._stops = list(GROUP_GRADIENT.get(group_name, ("#ffffff", "#ffffff")))
         self._panel: GradientPanel | None = None
+        self.sp_field: str | None = None  # set by the dashboard before set_issues
 
     def compose(self) -> ComposeResult:
         label = GROUP_SHORT_LABEL.get(self.group_name, self.group_name)
@@ -308,7 +314,7 @@ class KanbanColumn(Vertical):
         await self.list_view.clear()
         visible: list[dict[str, Any]] = []
         for issue in self._all_issues:
-            card = TicketCard(issue)
+            card = TicketCard(issue, self.sp_field)
             if self._filter and not card.matches(self._filter):
                 continue
             await self.list_view.append(card)
@@ -794,6 +800,68 @@ class SprintPickerModal(ModalScreen[tuple[str, int | None] | None]):
         self.dismiss(None)
 
 
+class ProjectPickerModal(ModalScreen["tuple[str, Project | None] | None"]):
+    """Pick which project a brainstorm session is for, or 'All projects'.
+
+    Returns ("project", Project) | ("all", None) | None on cancel."""
+
+    DEFAULT_CSS = """
+    ProjectPickerModal {
+        align: center middle;
+        background: #000000 97%;
+    }
+    ProjectPickerModal GradientPanel {
+        background: #1c1c1e;
+        width: 60;
+        height: auto;
+        max-height: 80%;
+    }
+    ProjectPickerModal #hint { color: $text-muted; height: 1; padding: 0 1; }
+    """
+
+    BINDINGS = [Binding("escape", "dismiss", "cancel", show=False)]  # noqa: RUF012
+
+    def __init__(self, projects: list[Project]):
+        super().__init__()
+        self.projects = projects
+
+    def compose(self) -> ComposeResult:
+        yield GradientPanel(panel_title="Brainstorm for…")
+
+    def on_mount(self) -> None:
+        items: list[ListItem] = []
+        for p in self.projects:
+            row = Text()
+            row.append(" project ", style="dim reverse")
+            row.append("  ")
+            row.append_text(gradient_text(p.name, *CHROME_GRADIENT, bold=True))
+            items.append(ListItem(Static(row)))
+        all_row = Text()
+        all_row.append(" all ", style="reverse")
+        all_row.append("  ")
+        all_row.append("All projects", style="bold")
+        items.append(ListItem(Static(all_row)))
+
+        self.lv = ListView(*items)
+        panel = self.query_one(GradientPanel)
+        panel.mount_content(
+            self.lv,
+            Static("[dim]enter to choose · esc to cancel[/]", markup=True, id="hint"),
+        )
+        self.lv.focus()
+
+    @on(ListView.Selected)
+    def selected(self, ev: ListView.Selected) -> None:
+        idx = ev.list_view.index or 0
+        if idx >= len(self.projects):
+            self.dismiss(("all", None))
+        else:
+            self.dismiss(("project", self.projects[idx]))
+
+    def action_dismiss(self) -> None:
+        self.dismiss(None)
+
+
 PRIORITY_CYCLE = ["Highest", "High", "Medium", "Low", "Lowest"]
 
 
@@ -1021,18 +1089,19 @@ class TicketDetailModal(ModalScreen[None]):
         return f"[dim]{edit}\n{view}[/]"
 
     async def _reload(self) -> None:
+        sp_field = self.config.fields.story_points
+        fields = [
+            "summary", "description", "status", "priority", "issuetype",
+            "labels", "components", "fixVersions",
+            "assignee", "reporter",
+            "parent", "issuelinks",
+            "comment", "customfield_10186",
+        ]
+        if sp_field:
+            fields.append(sp_field)
         try:
             async with JiraClient(self.config) as api:
-                fetched = await api.get_issue(
-                    self.key,
-                    fields=[
-                        "summary", "description", "status", "priority", "issuetype",
-                        "labels", "components", "fixVersions",
-                        "assignee", "reporter",
-                        "parent", "issuelinks",
-                        "comment", "customfield_10186",
-                    ],
-                )
+                fetched = await api.get_issue(self.key, fields=fields)
         except AuthError as e:
             if e.needs_relogin:
                 self.app.notify("⚠ session expired — run ch auth login", severity="error", timeout=15)
@@ -1104,6 +1173,10 @@ class TicketDetailModal(ModalScreen[None]):
         line1.append(type_name or "—", style="white")
         line1.append("  ·  ", style="dim")
         line1.append(priority or "—", style="white")
+        sp = points_value(f, self.config.fields.story_points)
+        if sp:
+            line1.append("  ·  ", style="dim")
+            line1.append(f"{sp} pts", style="cyan")
         line1.append("  ·  ", style="dim")
         line1.append(f"@{assignee}", style="white")
         if reporter and reporter != assignee:
@@ -2218,7 +2291,7 @@ class ChCommands(Provider):
             ("Assign", "Reassign focused ticket", "assign"),
             ("Comment", "Comment on focused ticket", "comment"),
             ("Open in browser", "Open focused ticket or PR", "open_browser"),
-            ("Brainstorm", "Open Claude with project context for new tickets", "brainstorm"),
+            ("Brainstorm", "Open Claude with project context (All mode → pick one project or all)", "brainstorm"),
             ("Filter", "Filter cards by key or summary", "focus_filter"),
             ("Cycle theme", "Cycle through built-in Textual themes", "cycle_theme"),
             ("Help", "Show keybindings", "help"),
@@ -2818,11 +2891,15 @@ class ChDashboard(App):
         return f"{base} {order}"
 
     async def _load_sprint(self) -> None:
+        sp_field = self.config.fields.story_points or None
+        fields = ["summary", "status", "priority", "issuetype", "updated"]
+        if sp_field:
+            fields.append(sp_field)
         try:
             async with JiraClient(self.config) as api:
                 data = await api.search_jql(
                     self._current_jql(),
-                    fields=["summary", "status", "priority", "issuetype", "updated"],
+                    fields=fields,
                     max_results=100,
                 )
         except AuthError:
@@ -2842,6 +2919,7 @@ class ChDashboard(App):
                 groups[grp].append(issue)
         self.sprint_count = len(issues)
         for grp, items in groups.items():
+            self.columns[grp].sp_field = sp_field
             await self.columns[grp].set_issues(items)
         # Re-apply current filter if any.
         if self.search_input and self.search_input.value:
@@ -3576,16 +3654,47 @@ class ChDashboard(App):
 
     @work(exclusive=False)
     async def action_brainstorm(self) -> None:
-        target_project = self.current_project or (self.config.projects[0] if self.config.projects else None)
-        target_name = target_project.name if target_project else "(no project)"
-        self.notify(f"building brainstorm context for {target_name}…", severity="information", timeout=3)
+        projects = list(self.config.projects)
+        # A project is selected → brainstorm it directly.
+        if self.current_project is not None:
+            await self._run_brainstorm_single(self.current_project)
+            return
+        # "All" mode with 2+ projects → let the user choose one or all.
+        if len(projects) >= 2:
+            result = await self.push_screen_wait(ProjectPickerModal(projects))
+            if result is None:
+                return  # cancelled
+            kind, proj = result
+            if kind == "project":
+                await self._run_brainstorm_single(proj)
+            else:
+                await self._run_brainstorm_all(projects)
+            return
+        # 0 or 1 configured projects → nothing to choose.
+        await self._run_brainstorm_single(projects[0] if projects else None)
+
+    async def _run_brainstorm_single(self, project: Project | None) -> None:
+        name = project.name if project else "(no project)"
+        self.notify(f"building brainstorm context for {name}…", severity="information", timeout=3)
         try:
-            prompt = await build_brainstorm_prompt(self.config, target_project)
+            prompt = await build_brainstorm_prompt(self.config, project)
         except Exception as e:
             self.notify(f"brainstorm build failed: {e}", severity="error")
             return
+        title = f"brainstorm·{project.name}" if project else "brainstorm"
+        self._spawn_brainstorm(prompt, title)
+
+    async def _run_brainstorm_all(self, projects: list[Project]) -> None:
+        self.notify(f"building brainstorm context for {len(projects)} projects…", severity="information", timeout=3)
+        try:
+            prompt = await build_brainstorm_prompt_multi(self.config, projects)
+        except Exception as e:
+            self.notify(f"brainstorm build failed: {e}", severity="error")
+            return
+        self._spawn_brainstorm(prompt, "brainstorm·all")
+
+    def _spawn_brainstorm(self, prompt: str, title: str) -> None:
         full = f"{self.config.ai.claude_path} {quote_for_shell(prompt)}"
-        title = f"brainstorm·{target_project.name}" if target_project else "brainstorm"
         try:
             spawn(full, title=title, config=self.config.tmux)
         except RuntimeError as e:

@@ -130,6 +130,24 @@ def issue_row(issue: dict[str, Any]) -> tuple[Text, Text, str, Text, str]:
     return key, type_badge(type_name), summary, priority_badge(pri_name), updated
 
 
+def points_value(fields: dict[str, Any], sp_field: str | None) -> str:
+    """Read a story-points value regardless of field type.
+
+    Single-select option fields arrive as {"value": "3"}; numeric fields as a
+    bare float. Returns "" when unset or no field configured.
+    """
+    if not sp_field:
+        return ""
+    raw = fields.get(sp_field)
+    if raw is None:
+        return ""
+    if isinstance(raw, dict):  # single-select option, e.g. {"value": "3"}
+        return str(raw.get("value", ""))
+    if isinstance(raw, float) and raw.is_integer():
+        return str(int(raw))
+    return str(raw)
+
+
 def group_issues(issues: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     """Group issues by canonical status column."""
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -140,7 +158,7 @@ def group_issues(issues: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]
     return groups
 
 
-def render_sprint_tables(issues: list[dict[str, Any]]) -> list[Table]:
+def render_sprint_tables(issues: list[dict[str, Any]], sp_field: str | None = None) -> list[Table]:
     groups = group_issues(issues)
     tables: list[Table] = []
     seen: set[str] = set()
@@ -149,16 +167,16 @@ def render_sprint_tables(issues: list[dict[str, Any]]) -> list[Table]:
         if not items:
             continue
         seen.add(group_name)
-        tables.append(_table_for_group(group_name, items))
+        tables.append(_table_for_group(group_name, items, sp_field))
     # Any non-canonical groups go last.
     for group_name, items in groups.items():
         if group_name in seen:
             continue
-        tables.append(_table_for_group(group_name, items))
+        tables.append(_table_for_group(group_name, items, sp_field))
     return tables
 
 
-def _table_for_group(group_name: str, items: list[dict[str, Any]]) -> Table:
+def _table_for_group(group_name: str, items: list[dict[str, Any]], sp_field: str | None = None) -> Table:
     style = GROUP_STYLE.get(group_name, "white")
     title = Text(f"{group_name} ({len(items)})", style=f"bold {style}")
     table = Table(title=title, title_justify="left", show_header=True, header_style="dim", expand=False, pad_edge=False)
@@ -166,7 +184,13 @@ def _table_for_group(group_name: str, items: list[dict[str, Any]]) -> Table:
     table.add_column("T", width=1, no_wrap=True)
     table.add_column("Summary", overflow="ellipsis")
     table.add_column("Pri", width=3, no_wrap=True)
+    if sp_field:
+        table.add_column("SP", width=2, no_wrap=True, justify="right")
     table.add_column("Updated", style="dim", no_wrap=True)
     for issue in items:
-        table.add_row(*issue_row(issue))
+        row = list(issue_row(issue))
+        if sp_field:
+            # issue_row returns (key, type, summary, pri, updated); SP slots before Updated.
+            row.insert(4, Text(points_value(issue.get("fields", {}), sp_field), style="cyan"))
+        table.add_row(*row)
     return table

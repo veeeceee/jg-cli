@@ -7,7 +7,7 @@ import shlex
 import click
 from rich.console import Console
 
-from jg.brainstorm import build_brainstorm_prompt_sync
+from jg.brainstorm import build_brainstorm_prompt_multi_sync, build_brainstorm_prompt_sync
 from jg.cli import async_command
 from jg.config import Config
 from jg.tmux import quote_for_shell, spawn
@@ -43,10 +43,28 @@ async def ai(ctx: click.Context, key: str | None) -> None:
 
 @ai.command()
 @click.option("--project", "project_name", default=None, help="Project name (defaults to first defined)")
+@click.option("--all", "all_projects", is_flag=True, help="Brainstorm across all configured projects (merged context)")
 @click.pass_context
-def brainstorm(ctx: click.Context, project_name: str | None) -> None:
+def brainstorm(ctx: click.Context, project_name: str | None, all_projects: bool) -> None:
     """Open a Claude pane pre-loaded with project context for ideating new tickets."""
     config: Config = ctx.obj["config"]
+
+    # --all: merged, per-project context across every configured project.
+    if all_projects:
+        if not config.projects:
+            err.print("[red]✗[/] no projects configured")
+            ctx.exit(1)
+        console.print(f"[dim]Building merged context for {len(config.projects)} projects…[/]")
+        try:
+            prompt = build_brainstorm_prompt_multi_sync(config, config.projects)
+        except Exception as e:
+            err.print(f"[red]✗[/] failed to build context: {e}")
+            ctx.exit(1)
+        full = f"{config.ai.claude_path} {quote_for_shell(prompt)}"
+        spawn(full, title="brainstorm·all", config=config.tmux)
+        console.print("[green]✓[/] opened brainstorm pane (brainstorm·all)")
+        return
+
     # Resolve project from name, or fall back to first defined.
     project = None
     if project_name:

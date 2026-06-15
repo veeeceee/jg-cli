@@ -156,6 +156,14 @@ class JiraClient:
             params={"maxResults": 200},
         )
 
+    async def get_edit_meta(self, key: str) -> dict[str, Any]:
+        """Editable fields for a specific issue, including a select's allowedValues.
+
+        Used to validate a select-type points value live before writing, rather
+        than against a hardcoded option list that can drift.
+        """
+        return await self._request("GET", f"/rest/api/3/issue/{key}/editmeta")
+
     # --- User ---
     async def myself(self) -> dict[str, Any]:
         return await self._request("GET", "/rest/api/3/myself")
