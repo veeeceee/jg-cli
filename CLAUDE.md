@@ -29,8 +29,8 @@ src/jg/
 ├── roadmap.py          # portfolio altitude: fetch epics + batch-tally child status (progress/done/blocked); effective_jql, progress_bar
 ├── gates.py            # task-typed orchestration gates (declarative GateSpec/GateOption); EPIC_DECOMPOSE + build_decompose_prompt
 ├── progress.py         # reads/updates ~/.ai/progress.json (scaffolding level per pattern); read_level, record_use
-├── workspace.py        # THE dashboard shell (WorkspaceApp): altitude ladder Inbox→Portfolio→Initiative→Task, lenses, actions, gate. `jg dashboard` launches this.
-├── tui.py              # component library: GradientPanel, themes glue, all action/detail/gate modals (reused by workspace.py). ChDashboard (old 3-panel shell) is RETIRED/unreferenced here — kept only until its modals are extracted; safe to prune later.
+├── workspace.py        # WIP altitude shell (WorkspaceApp): Home→Portfolio→Initiative→Task, lenses, actions, gate. Launched by `jg workspace`; being built toward parity to eventually replace the dashboard.
+├── tui.py              # ChDashboard — the current 3-panel `jg dashboard` daily driver (kanban + PR sidebar + rich detail modals) — PLUS the shared component library (GradientPanel, themes, action/detail/gate modals) that workspace.py reuses.
 └── commands/           # one click command per file
     ├── auth.py         # jg auth setup/login/logout/status
     ├── sprint.py       # jg sprint
@@ -64,9 +64,14 @@ uv run jg dashboard      # run from source without installing
 uv run pytest -q         # tests (32 passing — pure helpers)
 ```
 
-## Dashboard — altitude workspace (`jg dashboard` → `workspace.py`)
+## Altitude workspace (`jg workspace` → `workspace.py`, WIP)
 
-The dashboard is an **altitude ladder**, not fixed panels. One navigable spine
+> Status: `jg dashboard` is the full-featured 3-panel kanban shell (see below) —
+> the daily driver. `jg workspace` is the in-progress altitude shell being built
+> toward parity (re-ports pending: rich detail pane + markdown, kanban board,
+> ticket editing, notifier). It will replace the dashboard once at parity.
+
+The workspace is an **altitude ladder**, not fixed panels. One navigable spine
 with an always-on breadcrumb; the fast actions work at every altitude.
 
 - **Home = Inbox** (cold-start): inbound work with no place in the tree —
@@ -89,9 +94,9 @@ not yet ported: full ticket editing (`e`/`d`/`T`/`p`/`l`/`m`), PR-detail/merge
 modal, Repos view, `E` editor, `/` filter, story-point chips, command palette,
 the Docs/research lens (`R`), and the background macOS notifier.
 
-## TUI dashboard structure (RETIRED — old 3-panel `ChDashboard`, no longer launched)
+## TUI dashboard structure (`jg dashboard` — current daily driver)
 
-The app **was** a **master + dual-detail** shell: the Projects panel (master) scoped two sibling detail panes — Kanban (tickets) and Code (PRs + repos). Both detail panes own tab strips for their own sub-views; the top chrome only shows project context. (Retained in `tui.py` for the modals/GradientPanel the workspace reuses; the `ChDashboard` App class itself is unreferenced.)
+The dashboard is a **master + dual-detail** shell: the Projects panel (master) scopes two sibling detail panes — Kanban (tickets) and Code (PRs + repos). Both detail panes own tab strips for their own sub-views; the top chrome only shows project context.
 
 - **Projects** are config-defined in `[[projects]]` blocks (TOML). Each has a `jql` filter + `repos` list + `local_path` + `repo_paths` (per-repo path overrides — solves cases where `<org>/<repo-slug>` doesn't map cleanly to your local clone dir name).
 - **Selecting a project** scopes the kanban JQL + PR list + repo list.
