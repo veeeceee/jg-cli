@@ -63,7 +63,6 @@ def _register() -> None:
         testcases,
         transition,
         view,
-        workspace,
     )
 
     cli.add_command(auth.auth)
@@ -83,7 +82,6 @@ def _register() -> None:
     cli.add_command(project.project)
     cli.add_command(research.research)
     cli.add_command(roadmap.roadmap)
-    cli.add_command(workspace.workspace)
     cli.add_command(dashboard.dashboard)
 
 

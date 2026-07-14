@@ -29,8 +29,7 @@ src/jg/
 ├── roadmap.py          # portfolio altitude: fetch epics + batch-tally child status (progress/done/blocked); effective_jql, progress_bar
 ├── gates.py            # task-typed orchestration gates (declarative GateSpec/GateOption); EPIC_DECOMPOSE + build_decompose_prompt
 ├── progress.py         # reads/updates ~/.ai/progress.json (scaffolding level per pattern); read_level, record_use
-├── workspace.py        # WIP altitude shell (WorkspaceApp): Home→Portfolio→Initiative→Task, lenses, actions, gate. Launched by `jg workspace`; being built toward parity to eventually replace the dashboard.
-├── tui.py              # ChDashboard — the current 3-panel `jg dashboard` daily driver (kanban + PR sidebar + rich detail modals) — PLUS the shared component library (GradientPanel, themes, action/detail/gate modals) that workspace.py reuses.
+├── tui.py              # ChDashboard — the 3-panel `jg dashboard` (kanban + PR sidebar + rich markdown detail modals + editing + notifier) — the primary TUI. Also home to GradientPanel, themes glue, and all the action/detail/gate modals.
 └── commands/           # one click command per file
     ├── auth.py         # jg auth setup/login/logout/status
     ├── sprint.py       # jg sprint
@@ -64,37 +63,15 @@ uv run jg dashboard      # run from source without installing
 uv run pytest -q         # tests (32 passing — pure helpers)
 ```
 
-## Altitude workspace (`jg workspace` → `workspace.py`, WIP)
+> Design note: an "altitude workspace" shell (single-pane zoom-stack: Home →
+> Portfolio → Initiative → Task) was prototyped as a possible replacement and
+> **retired** — live use + UX research both confirmed the 3-panel master-detail
+> structure below is the right one (persistent panels, spatial memory,
+> at-a-glance density). The keepers from that effort are the standalone features
+> (`research`, `roadmap`, the decompose gate) and the plan to fold an inbox +
+> Zoho Desk into this dashboard. Full history on the `workspace-shell` branch.
 
-> Status: `jg dashboard` is the full-featured 3-panel kanban shell (see below) —
-> the daily driver. `jg workspace` is the in-progress altitude shell being built
-> toward parity (re-ports pending: rich detail pane + markdown, kanban board,
-> ticket editing, notifier). It will replace the dashboard once at parity.
-
-The workspace is an **altitude ladder**, not fixed panels. One navigable spine
-with an always-on breadcrumb; the fast actions work at every altitude.
-
-- **Home = Inbox** (cold-start): inbound work with no place in the tree —
-  external review requests (GitHub) + tickets assigned to me. Enter services a
-  review PR (`/review`) or descends into an assigned task.
-- **Ladder**: `p` → Portfolio (all epics w/ progress) → `enter` → Initiative
-  (an epic's tasks) → `enter` → Task (detail). `esc`/`h` walks back toward home.
-- **Lenses** (`[` / `]`), scoped to altitude: Portfolio = Roadmap / Sprint (my
-  open-sprint tasks across all initiatives); Initiative = Board / Mine.
-- **Actions at any altitude** on the focused item: `t`/`a`/`c` transition/
-  assign/comment, `A` claude (`/issue` on a task, project-dir on an epic,
-  `/review` on an inbox PR), `o` browser. `d` on an initiative runs the
-  two-stage decompose **gate** (scope → strategy, at your progress.json level).
-- Model principle: **the tree holds work you own; the Inbox holds work that
-  arrives at you.** A PR is a task's closing state, not a collection — reached
-  by navigating to its task (or, for external reviews, from the Inbox).
-
-**Cutover status:** this replaced the old 3-panel shell (see below). Known gaps
-not yet ported: full ticket editing (`e`/`d`/`T`/`p`/`l`/`m`), PR-detail/merge
-modal, Repos view, `E` editor, `/` filter, story-point chips, command palette,
-the Docs/research lens (`R`), and the background macOS notifier.
-
-## TUI dashboard structure (`jg dashboard` — current daily driver)
+## TUI dashboard structure (`jg dashboard`)
 
 The dashboard is a **master + dual-detail** shell: the Projects panel (master) scopes two sibling detail panes — Kanban (tickets) and Code (PRs + repos). Both detail panes own tab strips for their own sub-views; the top chrome only shows project context.
 
