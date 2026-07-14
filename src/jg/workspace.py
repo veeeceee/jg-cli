@@ -29,12 +29,14 @@ from jg.config import Config
 from jg.render import GROUP_ORDER, GROUP_STYLE, normalize_status
 from jg.themes import ALL_THEMES
 from jg.tmux import quote_for_shell, spawn, spawn_in_dir
-from jg.tui import (  # reuse existing panel + action/gate modals
+from jg.tui import (  # reuse existing panel + kanban + action/gate modals
     AssignModal,
     CommentModal,
     GateModal,
     GradientPanel,
+    KanbanColumn,
     ScopeGateModal,
+    TicketCard,
     TransitionModal,
 )
 
@@ -104,6 +106,7 @@ class WorkspaceApp(App):
     WorkspaceApp GradientPanel { height: 1fr; }
     WorkspaceApp #home-row { height: 1fr; }
     WorkspaceApp #home-row > GradientPanel { width: 1fr; height: 1fr; }
+    WorkspaceApp #board-row { height: 1fr; }
     WorkspaceApp .ws-detail { padding: 0 1; height: auto; }
     WorkspaceApp .ws-meta { color: $text-muted; height: auto; margin: 0 0 1 0; }
     WorkspaceApp Markdown { margin: 0; padding: 0; }
@@ -360,7 +363,7 @@ class WorkspaceApp(App):
             return
         await self._swap(ListView(*[_EpicRow(e) for e in epics]))
 
-    # ── altitude 1: initiative ────────────────────────────────────────────────
+    # ── altitude 1: initiative — a kanban board (status columns) ───────────────
     @work(exclusive=True)
     async def load_initiative(self) -> None:
         assert self.current_epic is not None
@@ -371,7 +374,42 @@ class WorkspaceApp(App):
         if self.lens["initiative"] == "Mine":
             base += " AND assignee = currentUser()"
         jql = base + " ORDER BY status ASC, updated DESC"
-        await self._show_rows(await self._search_rows(jql), "no tasks in this lens")
+        fields = ["summary", "status", "priority", "issuetype"]
+        sp = self.config.fields.story_points
+        if sp:
+            fields.append(sp)
+        try:
+            async with JiraClient(self.config) as api:
+                data = await api.search_jql(jql, fields=fields, max_results=100)
+        except Exception as e:
+            await self._swap(Static(f"[red]{self._notify_err(e)}[/]", classes="detail"), focus_list=False)
+            return
+        await self._render_board(data.get("issues", []))
+
+    async def _render_board(self, issues: list[dict]) -> None:
+        """Group children into status columns (reusing KanbanColumn)."""
+        groups: dict[str, list[dict]] = {}
+        for iss in issues:
+            g = normalize_status((iss.get("fields") or {}).get("status", {}).get("name", ""))
+            groups.setdefault(g, []).append(iss)
+        ordered = [g for g in GROUP_ORDER if g in groups] + [g for g in groups if g not in GROUP_ORDER]
+        assert self._body is not None
+        if not ordered:
+            await self._swap(Static("[dim]no tasks in this lens[/]", classes="detail"), focus_list=False)
+            return
+        columns = []
+        for g in ordered:
+            col = KanbanColumn(g)
+            col.sp_field = self.config.fields.story_points or None
+            columns.append((col, groups[g]))
+        await self._body.remove_children()
+        await self._body.mount(Horizontal(*[c for c, _ in columns], id="board-row"))
+        for col, col_issues in columns:
+            await col.set_issues(col_issues)
+        first_lv = columns[0][0].list_view
+        if len(first_lv.children):
+            first_lv.index = 0  # highlight the first card so enter has a target
+        first_lv.focus()
 
     # ── altitude 2: task ──────────────────────────────────────────────────────
     @work(exclusive=True)
@@ -434,6 +472,10 @@ class WorkspaceApp(App):
         elif isinstance(item, _TaskRow):
             self.current_task = (item.task_key, item.task_summary)
             self._task_from = self.altitude  # inbox, portfolio (Sprint lens), or initiative
+            self.load_task()
+        elif isinstance(item, TicketCard):  # a kanban card on the initiative board
+            self.current_task = (item.key_label, item.summary)
+            self._task_from = "initiative"
             self.load_task()
         # _HeaderRow → ignored
 
