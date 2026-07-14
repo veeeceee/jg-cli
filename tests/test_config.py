@@ -145,3 +145,18 @@ def test_roadmap_config_roundtrips(config_path):
     c.roadmap.jql = "labels = roadmap"
     c.save()
     assert Config.load().roadmap.jql == "labels = roadmap"
+
+
+def test_zoho_config_roundtrips(config_path):
+    c = Config()
+    c.zoho.client_id = "zc"
+    c.zoho.org_id = "5212176"
+    c.zoho.department_ids = ["3154000000006907"]
+    c.zoho.agent_emails = ["vibhu@charmhealthtech.com", "vibhu.c@medicalmine.com"]
+    c.save()
+    z = Config.load().zoho
+    assert z.client_id == "zc"
+    assert z.org_id == "5212176"
+    assert z.department_ids == ["3154000000006907"]
+    assert z.agent_emails == ["vibhu@charmhealthtech.com", "vibhu.c@medicalmine.com"]
+    assert z.is_setup

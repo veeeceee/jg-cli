@@ -94,6 +94,25 @@ class FieldsConfig:
 
 
 @dataclass
+class ZohoConfig:
+    """Zoho Desk connection + identity (support-ticket involvement).
+
+    `client_id` is jg's own self-client; the secret + tokens live in Keychain.
+    `agent_emails` are the addresses that mean "involved" (assignee / thread
+    participant / body mention / @mention). Resolved to agent ids at runtime."""
+    client_id: str = ""
+    org_id: str = ""
+    department_ids: list[str] = field(default_factory=list)
+    agent_emails: list[str] = field(default_factory=list)
+    accounts_url: str = "https://accounts.zoho.com"  # US DC; .eu/.in/.com.au for others
+    api_base: str = "https://desk.zoho.com/api/v1"
+
+    @property
+    def is_setup(self) -> bool:
+        return bool(self.client_id and self.org_id)
+
+
+@dataclass
 class RoadmapConfig:
     """Portfolio/roadmap altitude. `jql` selects which epics appear; empty means
     derive from the default Jira project (see roadmap.effective_jql)."""
@@ -152,6 +171,7 @@ class Config:
     ui: UIConfig = field(default_factory=UIConfig)
     fields: FieldsConfig = field(default_factory=FieldsConfig)
     roadmap: RoadmapConfig = field(default_factory=RoadmapConfig)
+    zoho: ZohoConfig = field(default_factory=ZohoConfig)
     projects: list[Project] = field(default_factory=list)
 
     # ── Back-compat delegating properties ──────────────────────────────────
@@ -263,6 +283,14 @@ class Config:
             "roadmap": {
                 "jql": self.roadmap.jql,
             },
+            "zoho": {
+                "client_id": self.zoho.client_id,
+                "org_id": self.zoho.org_id,
+                "department_ids": self.zoho.department_ids,
+                "agent_emails": self.zoho.agent_emails,
+                "accounts_url": self.zoho.accounts_url,
+                "api_base": self.zoho.api_base,
+            },
         }
         if self.projects:
             data["projects"] = [self._project_to_dict(p) for p in self.projects]
@@ -320,6 +348,7 @@ class Config:
         ui_raw = data.get("ui", {})
         fields_raw = data.get("fields", {})
         roadmap_raw = data.get("roadmap", {})
+        zoho_raw = data.get("zoho", {})
         return cls(
             atlassian=atlassian,
             tmux=TmuxConfig(
@@ -342,6 +371,14 @@ class Config:
                 story_points_type=fields_raw.get("story_points_type", "number"),
             ),
             roadmap=RoadmapConfig(jql=roadmap_raw.get("jql", "")),
+            zoho=ZohoConfig(
+                client_id=zoho_raw.get("client_id", ""),
+                org_id=zoho_raw.get("org_id", ""),
+                department_ids=list(zoho_raw.get("department_ids") or []),
+                agent_emails=list(zoho_raw.get("agent_emails") or []),
+                accounts_url=zoho_raw.get("accounts_url", "https://accounts.zoho.com"),
+                api_base=zoho_raw.get("api_base", "https://desk.zoho.com/api/v1"),
+            ),
             projects=[cls._project_from_dict(p) for p in (data.get("projects") or [])],
         )
 
