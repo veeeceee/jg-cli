@@ -37,6 +37,9 @@ Same Atlassian OAuth as the Claude MCP server — no API token needed. GitHub vi
 | `jg search "<jql>"` | Run a JQL search |
 | `jg testcases <KEY>` | View/edit test cases (ADF custom field) |
 | `jg pr list/view/review` | List / view / review PRs via `gh` |
+| `jg project [<name>]` | Project workspace: plan, research, docs & memory, work roll-up (lists projects with no name) |
+| `jg research <project> [<topic>]` | Scaffold a dated research note + open Claude to fill it (no topic → list existing) |
+| `jg roadmap` | Portfolio altitude: all epics with child progress, blocked flags |
 | `jg ai <KEY>` | Open Claude Code tmux pane for a ticket |
 | `jg ai brainstorm` | Open brainstorm session with project context |
 | `jg ai standup` | Generate standup summary |
@@ -117,6 +120,8 @@ uv run jg dashboard   # run from source without installing
 h/l ←→        cycle Projects → Kanban → Code (or use arrow keys)
 j/k ↑↓        navigate within list
 enter         open detail modal
+p             project workspace (plan · research · docs & memory · work)
+g             roadmap (all epics with child progress)
 1/2/3/4       Kanban tabs: sprint / backlog / all / recent
 [/]           cycle tabs of focused panel (Kanban or Code)
 tab           swap Kanban ⇄ Code (medium/narrow widths)

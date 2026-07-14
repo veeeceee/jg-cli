@@ -55,6 +55,9 @@ def _register() -> None:
         link,
         points,
         pr,
+        project,
+        research,
+        roadmap,
         search,
         sprint,
         testcases,
@@ -76,6 +79,9 @@ def _register() -> None:
     cli.add_command(testcases.testcases)
     cli.add_command(ai.ai)
     cli.add_command(pr.pr)
+    cli.add_command(project.project)
+    cli.add_command(research.research)
+    cli.add_command(roadmap.roadmap)
     cli.add_command(dashboard.dashboard)
 
 

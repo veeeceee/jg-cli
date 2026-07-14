@@ -25,7 +25,11 @@ src/jg/
 ├── tmux.py             # spawn/spawn_in_dir for AI panes; idempotent on pane title
 ├── notifier.py         # macOS notifications via osascript (with dedupe)
 ├── brainstorm.py       # build_brainstorm_prompt[_multi]: composes context (recent tickets, components, repos); _multi merges per-project sections for "All projects"
-├── tui.py              # Textual dashboard (1700+ lines — main TUI module)
+├── projectdocs.py      # read-only surface over a project's canonical artifacts (plan/research/docs/memory/confluence); defensive local-fs reads; new_research_file scaffolds dated frontmatter'd notes
+├── roadmap.py          # portfolio altitude: fetch epics + batch-tally child status (progress/done/blocked); effective_jql, progress_bar
+├── gates.py            # task-typed orchestration gates (declarative GateSpec/GateOption); EPIC_DECOMPOSE + build_decompose_prompt
+├── progress.py         # reads/updates ~/.ai/progress.json (scaffolding level per pattern); read_level, record_use
+├── tui.py              # Textual dashboard (main TUI module) incl. ProjectDetailModal (`p`) + RoadmapModal (`g`) + GateModal
 └── commands/           # one click command per file
     ├── auth.py         # jg auth setup/login/logout/status
     ├── sprint.py       # jg sprint
@@ -40,6 +44,9 @@ src/jg/
     ├── points.py       # jg points <KEY> [VALUE]  (configurable story-points field; select-aware)
     ├── testcases.py    # jg testcases <KEY> [--edit]  (writes customfield_10186 as ADF)
     ├── pr.py           # jg pr list/view/review
+    ├── project.py      # jg project [<name>]  (CLI mirror of the project workspace)
+    ├── research.py     # jg research <project> [<topic>]  (scaffold dated note + open claude)
+    ├── roadmap.py      # jg roadmap  (epics with child progress — portfolio altitude)
     ├── ai.py           # jg ai <KEY> | brainstorm | standup | sprint-review (tmux pane → claude)
     └── dashboard.py    # jg dashboard
 ```
@@ -87,6 +94,8 @@ Dashboard:
   h/l ←→        cycle Projects → Kanban cols → Sidebar (skips collapsed panels)
   j/k ↑↓        navigate within column / list
   enter         open detail modal (ticket / PR / repo)
+  p             project workspace (plan · research · docs & memory · work roll-up)
+  g             roadmap: all epics with child progress (portfolio altitude)
   1/2/3/4       Kanban tabs: sprint / backlog / all / recent
   [/]           cycle tabs of focused detail (Kanban or Code)
   tab           swap Kanban ⇄ Code (medium/narrow widths)
@@ -114,10 +123,21 @@ For claudecode.nvim, press `E` first so nvim writes its `~/.claude/ide/*.lock` b
 
 ## Project config (TOML)
 
+Layout principle: connection state jg manages itself lives under `[atlassian]`
+(written by `jg auth login`); everything from `[ui]` down is user-authored. A
+`# don't hand-edit` banner is prepended on every save. Old flat top-level keys
+(`client_id`, `default_cloud_id`, `default_cloud_url`, `default_project`) are
+still read for back-compat and migrated to `[atlassian]` on next save — so
+existing configs keep working. In code, `config.client_id` /
+`config.default_cloud_url` / `config.default_project` remain as read/write
+delegating properties over `config.atlassian.*`, so callers didn't change.
+
 ```toml
+[atlassian]                       # jg-managed — written by `jg auth login`
 client_id = "..."
-default_cloud_id = "..."
-default_cloud_url = "https://your-org.atlassian.net"
+cloud_id = "..."
+cloud_url = "https://your-org.atlassian.net"
+default_jira_project = "CH"       # a Jira project KEY — NOT a [[projects]] block
 
 [ui]
 theme = "jg-pink"           # or jg-night, jg-paper, plus all built-in Textual themes
@@ -154,11 +174,89 @@ name = "MyProject"
 jql = "parent = PROJ-1"            # any JQL fragment, layered on top of view-mode JQL
 repos = ["myorg/backend", "myorg/frontend"]
 local_path = "~/code/myproject"    # primary, used for project-level e/s/A actions
+# research_dir = "~/code/myproject/research"  # optional override; default is
+#                                             # ~/DeveloperLocal/research/<slug(name)>
 
 [projects.repo_paths]
 "myorg/backend"  = "~/code/backend"
 "myorg/frontend" = "~/code/frontend"
+
+[projects.docs]                    # pointers to canonical artifacts jg surfaces (never owns)
+plan       = "docs/strategic-plan.md"   # relative to local_path (or absolute)
+dirs       = ["docs"]                    # doc dirs listed in the project workspace
+memory     = ["project_myproject"]       # MEMORY.md slugs (~/.claude/.../memory/)
+confluence = ["MYSPACE"]                 # space/page keys (link-only for now)
+
+[roadmap]                          # portfolio altitude (jg roadmap / `g` in TUI)
+jql = ""                           # which epics to show; empty → "project = <default> AND issuetype = Epic"
 ```
+
+### Project workspace (`p` in the TUI / `jg project <name>`)
+
+`projectdocs.py` reads a project's `[projects.docs]` pointers (all read-only,
+defensive — missing paths yield empty results, never raise). `ProjectDetailModal`
+(TUI, `p` key) and `commands/project.py` (`jg project <name>`) render the same
+four sections: **Plan** (summary of the plan doc), **Research** (newest markdown
+in the research dir, a focusable list — enter opens a note in the editor),
+**Docs & memory** (doc dirs + resolved memory slugs + Confluence links), and
+**Work** (live ticket counts by status via one JQL call). In the modal, `A`
+opens Claude scoped to the project, `o` opens Confluence/Jira in the browser.
+Memory slugs resolve by globbing `~/.claude/projects/*/memory/<slug>.md`.
+
+### Research write-back (`R` in the workspace / `jg research`)
+
+The mechanical/inferential split applied to research: **jg** creates a dated,
+frontmatter'd note (`projectdocs.new_research_file` → `YYYY-MM-DD-<slug>.md` with
+`title`/`date`/`project`, idempotent so it never clobbers findings); **Claude**
+fills in the body. `R` in the workspace prompts for a topic then spawns Claude on
+the file; `jg research <project> <topic>` does the same from the CLI (`-e` opens
+the editor instead). Because jg owns the frontmatter, `list_research` resurfaces
+every note with a clean title/date next time you open the workspace — that's the
+whole write-back loop, no jg-side state.
+
+### Roadmap (`g` in the TUI / `jg roadmap`)
+
+`roadmap.py` is the altitude above the sprint kanban. `effective_jql` picks the
+epics (config `[roadmap].jql`, else derived from the default Jira project). One
+query lists them; one paginated `parent in (…)` query tallies every child's
+status client-side (no N+1). Each epic gets a progress bar, `done` by
+statusCategory (folds Done/Resolved/Closed), and a blocked count. `_sort_key`
+floats in-progress epics to the top and sinks finished ones. `RoadmapModal` (`g`)
+and `commands/roadmap.py` share this; enter/`o` opens an epic in the browser.
+(Fix-versions are unused in this Jira — the epic/parent structure is the roadmap.)
+
+### Gated orchestration (`d` on an epic in the roadmap)
+
+jg is a **coordinator**: it never authors work, it orchestrates Claude to — but
+every authoring orchestration is *gated* first. `d` on a highlighted epic runs a
+**two-stage gate**, both stages blocking:
+
+1. **Scope** (`ScopeGateModal`) — jg surfaces *facts* it already holds (the epic's
+   raw child count / done — no threshold, no "container" label) and forces YOU to
+   judge whether there's one bounded, sliceable outcome here or to name the real
+   scope (a feature, a plan doc, or "reorg the undone tail"). Scope-validity is a
+   judgment, not a heuristic — jg shows, you decide. (This stage exists because
+   the first live run hit CH-36, a 30+ child master epic; the strategy question
+   is meaningless until scope is settled.)
+2. **Strategy** (`GateModal`) — renders `gates.EPIC_DECOMPOSE` (vertical-slice /
+   risk-first / milestone / horizontal, with tradeoffs + failure modes) at your
+   scaffolding level. A one-line reasoning is **required at every level** (even 0).
+
+Only after both does jg bake scope + strategy + reasoning + the failure-mode-to-
+guard into the Claude prompt (`build_decompose_prompt`) and spawn it. The gate is
+deliberate friction on the *inferential* side only — the mechanical loop stays
+sub-second.
+
+The gate is rendered at your **scaffolding level** for the governing pattern,
+read from `~/.ai/progress.json` via `progress.read_level` (the same file the
+dialectical-coding framework uses — jg is a second client). Level 0 supplies all
+options + tradeoffs + failure modes and you pick; level 1-2 withhold detail and
+require typed reasoning; level 3 shows nothing and you propose the strategy
+yourself. `progress.record_use` bumps uses/lastUsed on orchestration; promotion
+(correct++/level++) stays with the reflection flow, the only place a decision's
+correctness is actually known. Gate content is declarative (`gates.GATES`) so it
+externalizes to config/file when the registry grows past the prototype's one
+task type.
 
 ## Critical gotchas (caused real bugs)
 

@@ -65,6 +65,7 @@ from textual.widgets import (
 )
 
 from jg import _compat as _jg_compat
+from jg import gates, progress, projectdocs, roadmap
 from jg.adf import render_to_text, text_to_adf
 from jg.api import ApiError, JiraClient
 from jg.auth import AuthError
@@ -86,6 +87,7 @@ from jg.gradient import (
 )
 from jg.notifier import notify as macos_notify
 from jg.render import (
+    GROUP_ORDER,
     GROUP_STYLE,
     PRIORITY_ABBR,
     TYPE_ABBR,
@@ -2062,6 +2064,677 @@ def _dim_rgb(rgb: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
     return tuple(max(0, min(255, int(c * factor))) for c in rgb)  # type: ignore[return-value]
 
 
+class _ResearchItem(ListItem):
+    """A research doc row in the project workspace; enter opens it in the editor."""
+
+    def __init__(self, doc: projectdocs.ResearchDoc):
+        import datetime as _dt
+
+        self.doc_path = doc.path
+        date = _dt.datetime.fromtimestamp(doc.mtime).strftime("%Y-%m-%d") if doc.mtime else "—"
+        line = Text()
+        line.append(f"{date}  ", style="cyan")
+        line.append(doc.title, style="white")
+        super().__init__(Static(line))
+
+
+class _ResearchTopicModal(ModalScreen["str | None"]):
+    """Single-line prompt for a new research topic."""
+
+    DEFAULT_CSS = """
+    _ResearchTopicModal { align: center middle; background: #000000 97%; }
+    _ResearchTopicModal GradientPanel { background: #1c1c1e; width: 80; height: 7; }
+    """
+    BINDINGS = [Binding("escape", "cancel", "cancel", show=False)]  # noqa: RUF012
+
+    def compose(self) -> ComposeResult:
+        yield GradientPanel(panel_title="New research topic")
+
+    def on_mount(self) -> None:
+        self.input = Input(placeholder="e.g. vector DB options for episodic memory")
+        panel = self.query_one(GradientPanel)
+        panel.mount_content(self.input, Static("[dim]enter to create · esc to cancel[/]", markup=True))
+        self.input.focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Input.Submitted)
+    def _submit(self, ev: Input.Submitted) -> None:
+        self.dismiss(ev.value.strip() or None)
+
+
+class ProjectDetailModal(ModalScreen[None]):
+    """Read-only project workspace: plan · research · docs & memory · work
+    roll-up. Everything jg surfaces about a project in one place. Launch points
+    only (A = claude scoped to the project, R = research session, enter on a
+    research row = open it) — jg never edits these artifacts; it points at where
+    they live."""
+
+    DEFAULT_CSS = """
+    ProjectDetailModal {
+        align: center middle;
+        background: #000000 97%;
+    }
+    ProjectDetailModal GradientPanel {
+        background: #1c1c1e;
+        width: 80%;
+        height: 80%;
+    }
+    ProjectDetailModal #title { text-style: bold; }
+    ProjectDetailModal #pmeta { color: $text-muted; height: auto; margin: 0 0 1 0; }
+    ProjectDetailModal #footer { color: $text-muted; }
+    ProjectDetailModal .section {
+        border: round #6c7086 50%;
+        border-title-color: #c0caf5;
+        border-title-style: bold;
+        padding: 0 1;
+        margin: 1 0 0 0;
+        height: auto;
+    }
+    """
+
+    BINDINGS = [  # noqa: RUF012
+        Binding("escape", "close", "close", show=False),
+        Binding("q", "close", "close", show=False),
+        Binding("r", "refresh", "refresh", show=True),
+        Binding("A", "claude", "claude", show=True),
+        Binding("R", "research", "research", show=True),
+        Binding("o", "open_browser", "browser", show=True),
+    ]
+
+    def __init__(self, project: Project, config: Config):
+        super().__init__()
+        self.project = project
+        self.config = config
+        self.body_scroll: VerticalScroll | None = None
+        self._rollup_static: Static | None = None
+        self._research_list: ListView | None = None
+
+    def compose(self) -> ComposeResult:
+        yield GradientPanel(panel_title="project")
+
+    async def on_mount(self) -> None:
+        panel = self.query_one(GradientPanel)
+        self._title_static = Static("", id="title")
+        self._meta_static = Static("", id="pmeta")
+        self.body_scroll = VerticalScroll()
+        self._footer_static = Static(self._footer_text(), id="footer", markup=True)
+        panel.mount_content(self._title_static, self._meta_static, self.body_scroll, self._footer_static)
+        self._render_header()
+        await self._render_local_sections()
+        self.run_worker(self._load_rollup())
+
+    def _footer_text(self) -> str:
+        return (
+            "[dim][bold #c0caf5]actions[/]  A claude · R research · enter open research · "
+            "o browser · r refresh · esc close[/]"
+        )
+
+    def _render_header(self) -> None:
+        self._title_static.update(Text(self.project.name, style="bold #c0caf5"))
+        meta = Text()
+        if self.project.jql:
+            meta.append(self.project.jql, style="dim")
+        if self.project.repos:
+            if self.project.jql:
+                meta.append("  ·  ", style="dim")
+            meta.append(f"{len(self.project.repos)} repos", style="dim")
+        self._meta_static.update(meta)
+
+    async def _mount_section(self, title: str, widgets: list[Any]) -> None:
+        assert self.body_scroll is not None
+        box = Vertical(*widgets, classes="section")
+        box.border_title = title
+        await self.body_scroll.mount(box)
+
+    async def _render_local_sections(self) -> None:
+        """Plan · research · docs & memory — pure local reads, instant."""
+        assert self.body_scroll is not None
+        await self.body_scroll.remove_children()
+
+        # ── Plan ──
+        ps = projectdocs.plan_summary(self.project)
+        plan_w: list[Static] = []
+        if ps is None:
+            plan_w.append(Static("[dim]no plan pointer — set docs.plan in config[/]", markup=True))
+        elif not ps.exists:
+            plan_w.append(Static(f"[red]⚠ plan not found:[/] [dim]{ps.path}[/]", markup=True))
+        else:
+            plan_w.append(Static(Text(ps.title, style="bold white")))
+            if ps.excerpt:
+                plan_w.append(Static(Text(ps.excerpt, style="dim")))
+            plan_w.append(Static(f"[dim]{ps.path}[/]", markup=True))
+        await self._mount_section("Plan", plan_w)
+
+        # ── Research (focusable — enter opens a doc in the editor) ──
+        research = projectdocs.list_research(self.project, limit=8)
+        rpath = projectdocs.research_path(self.project)
+        res_w: list[Any] = []
+        if research:
+            self._research_list = ListView(*[_ResearchItem(r) for r in research])
+            res_w.append(self._research_list)
+        else:
+            self._research_list = None
+            res_w.append(Static("[dim]no research yet — press R to start a session[/]", markup=True))
+        res_w.append(Static(f"[dim]{rpath}[/]", markup=True))
+        await self._mount_section(f"Research ({len(research)})", res_w)
+
+        # ── Docs & memory ──
+        docs = projectdocs.doc_links(self.project)
+        conf = projectdocs.confluence_links(self.project, self.config)
+        doc_w: list[Static] = []
+        for d in docs:
+            line = Text()
+            if d.kind == "memory":
+                line.append("◈ ", style="magenta")
+                line.append(d.label, style="white" if d.exists else "red")
+                if not d.exists:
+                    line.append("  (not found)", style="dim red")
+            elif d.kind == "docfile":
+                line.append("· ", style="dim")
+                line.append(d.label, style="white")
+            else:  # docdir
+                line.append("▸ ", style="dim")
+                line.append(d.label, style="white" if d.exists else "red")
+                if d.exists:
+                    line.append(f"  ({d.count} md)", style="dim")
+                else:
+                    line.append("  (not found)", style="dim red")
+            doc_w.append(Static(line))
+        for c in conf:
+            line = Text()
+            line.append("→ ", style="blue")
+            line.append(c.key, style="blue")
+            if c.url:
+                line.append(f"  {c.url}", style="dim")
+            doc_w.append(Static(line))
+        if not doc_w:
+            doc_w.append(Static("[dim]no docs/memory pointers configured[/]", markup=True))
+        await self._mount_section("Docs & memory", doc_w)
+
+        # ── Work roll-up (filled by the async worker) ──
+        self._rollup_static = Static("[dim]loading tickets…[/]", markup=True)
+        await self._mount_section("Work", [self._rollup_static])
+
+    async def _load_rollup(self) -> None:
+        if self._rollup_static is None:
+            return
+        jql = self.project.jql.strip()
+        if not jql:
+            self._rollup_static.update("[dim]no jql configured[/]")
+            return
+        try:
+            async with JiraClient(self.config) as api:
+                data = await api.search_jql(jql, fields=["status"], max_results=100)
+        except AuthError as e:
+            self._rollup_static.update(
+                "[red]session expired — run jg auth login[/]" if e.needs_relogin else "[red]auth error[/]"
+            )
+            return
+        except ApiError as e:
+            self._rollup_static.update(f"[red]load failed: {e}[/]")
+            return
+        except Exception as e:  # network/unexpected — never let a worker die silently
+            self._rollup_static.update(f"[red]load failed: {type(e).__name__}[/]")
+            return
+        issues = data.get("issues") or []
+        counts: dict[str, int] = {}
+        for iss in issues:
+            name = ((iss.get("fields") or {}).get("status") or {}).get("name", "")
+            group = normalize_status(name) if name else "?"
+            counts[group] = counts.get(group, 0) + 1
+        if not counts:
+            self._rollup_static.update("[dim]no matching tickets[/]")
+            return
+        total = sum(counts.values())
+        line = Text()
+        line.append(f"{total}{'+' if len(issues) >= 100 else ''} open", style="bold white")
+        line.append("   ")
+        first = True
+        ordered = [g for g in GROUP_ORDER if g in counts] + [g for g in counts if g not in GROUP_ORDER]
+        for group in ordered:
+            if not first:
+                line.append("  ·  ", style="dim")
+            style = GROUP_STYLE.get(group, "white")
+            line.append(f"{group} ", style=style)
+            line.append(str(counts[group]), style=f"bold {style}")
+            first = False
+        self._rollup_static.update(line)
+
+    def _project_base_dir(self) -> str | None:
+        base = projectdocs.project_base(self.project)
+        return str(base) if base and base.is_dir() else None
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    async def action_refresh(self) -> None:
+        await self._render_local_sections()
+        self.run_worker(self._load_rollup())
+        self.app.notify("refreshed", severity="information")
+
+    def action_claude(self) -> None:
+        cwd = self._project_base_dir()
+        if not cwd:
+            self.app.notify("no local path for this project", severity="warning")
+            return
+        try:
+            spawn_in_dir(self.config.ai.claude_path, cwd=cwd, title=self.project.name, config=self.config.tmux)
+        except RuntimeError as e:
+            self.app.notify(str(e), severity="error")
+            return
+        self.app.notify(f"opened claude in {cwd}", severity="information")
+
+    def action_research(self) -> None:
+        """Prompt for a topic, then scaffold + open Claude via the callback."""
+        self.app.push_screen(_ResearchTopicModal(), self._begin_research)
+
+    def _begin_research(self, topic: str | None) -> None:
+        """jg creates the dated note (consistent frontmatter); Claude fills it in."""
+        from pathlib import Path
+
+        if not topic:
+            return
+        path = projectdocs.new_research_file(self.project, topic)
+        cwd = self._project_base_dir() or str(Path.home())
+        prompt = (
+            f"Research: {topic}. Project: {self.project.name}. Write your findings into "
+            f"{path} (the frontmatter is already set — fill in the body). Be thorough "
+            f"and cite sources."
+        )
+        cmd = f"{self.config.ai.claude_path} {quote_for_shell(prompt)}"
+        try:
+            spawn_in_dir(cmd, cwd=cwd, title=f"research·{self.project.name}", config=self.config.tmux)
+        except RuntimeError as e:
+            self.app.notify(str(e), severity="error")
+            return
+        self.app.notify(f"research note created · {path.name}", severity="information")
+        self.run_worker(self._render_local_sections())  # resurface the new note
+
+    @on(ListView.Selected)
+    def _open_research(self, ev: ListView.Selected) -> None:
+        if not isinstance(ev.item, _ResearchItem):
+            return
+        path = ev.item.doc_path
+        editor = self.config.ui.editor_command or "nvim"
+        cmd = f"{editor} {quote_for_shell(str(path))}"
+        try:
+            spawn_in_dir(cmd, cwd=str(path.parent), title=f"research·{self.project.name}", config=self.config.tmux)
+        except RuntimeError as e:
+            self.app.notify(str(e), severity="error")
+            return
+        self.app.notify(f"opened {path.name}", severity="information")
+
+    def action_open_browser(self) -> None:
+        import urllib.parse
+        import webbrowser
+
+        conf = projectdocs.confluence_links(self.project, self.config)
+        if conf and conf[0].url:
+            webbrowser.open(conf[0].url)
+            self.app.notify(f"opened {conf[0].key}", severity="information")
+            return
+        base = self.config.default_cloud_url.rstrip("/") if self.config.default_cloud_url else ""
+        if base and self.project.jql:
+            webbrowser.open(f"{base}/issues/?jql={urllib.parse.quote(self.project.jql)}")
+            self.app.notify("opened Jira search", severity="information")
+            return
+        self.app.notify("nothing to open in browser", severity="warning")
+
+
+class _EpicItem(ListItem):
+    """An epic row in the roadmap; enter/o opens it in the browser."""
+
+    def __init__(self, epic: roadmap.Epic, cloud_url: str):
+        self.epic_key = epic.key
+        self.epic_summary = epic.summary
+        self.epic_total = epic.total
+        self.epic_done = epic.done
+        base = cloud_url.rstrip("/") if cloud_url else ""
+        self.url = f"{base}/browse/{epic.key}" if base else ""
+        line = Text()
+        line.append(f"{epic.key:>8}  ", style="bold #c0caf5")
+        bar_style = "green" if (epic.is_done_status or epic.pct == 100) else ("cyan" if epic.pct > 0 else "dim")
+        line.append(roadmap.progress_bar(epic.pct) + " ", style=bar_style)
+        line.append(f"{epic.pct:>3}% ", style="bold")
+        line.append(f"{epic.done}/{epic.total}".ljust(8), style="dim")
+        line.append(f"{epic.status}  ", style=GROUP_STYLE.get(epic.status_group, "white"))
+        line.append(epic.summary[:44])
+        if epic.blocked:
+            line.append(f"  ⚠ {epic.blocked}", style="red")
+        super().__init__(Static(line))
+
+
+class _GateOptionItem(ListItem):
+    """One decision option in a gate, rendered at the current scaffolding level."""
+
+    def __init__(self, opt: gates.GateOption, level: int):
+        self.opt = opt
+        body = Text()
+        body.append("▸ ", style="dim")
+        body.append(opt.name, style="bold white")
+        # Level modulates how much jg supplies: L0 all, L1 no failure mode,
+        # L2 name only, L3 handled by hiding the list entirely.
+        if level <= 0:
+            body.append(f"\n    optimizes: {opt.optimizes}", style="green")
+            body.append(f"\n    sacrifices: {opt.sacrifices}", style="yellow")
+            body.append(f"\n    ⚠ {opt.failure_mode}", style="red")
+        elif level == 1:
+            body.append(f"\n    optimizes: {opt.optimizes}", style="green")
+            body.append(f"\n    sacrifices: {opt.sacrifices}", style="yellow")
+        super().__init__(Static(body))
+
+
+class ScopeGateModal(ModalScreen["str | None"]):
+    """Stage 1 of epic→tasks: forces the scope judgment before the strategy gate.
+
+    jg surfaces facts (raw child count/done — no threshold, no 'container'
+    label) and makes YOU judge whether there's one bounded, sliceable outcome
+    here or name the real scope. Scope-validity is a judgment, not a heuristic —
+    so jg shows, you decide."""
+
+    DEFAULT_CSS = """
+    ScopeGateModal { align: center middle; background: #000000 97%; }
+    ScopeGateModal GradientPanel { background: #1c1c1e; width: 84%; height: auto; max-height: 60%; }
+    ScopeGateModal #scope-head { height: auto; margin: 0 0 1 0; }
+    ScopeGateModal #footer { color: $text-muted; }
+    ScopeGateModal #scope-in { margin: 1 0 0 0; }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "cancel", show=False)]  # noqa: RUF012
+
+    def __init__(self, epic_key: str, epic_summary: str, total: int, done: int):
+        super().__init__()
+        self.epic_key = epic_key
+        self.epic_summary = epic_summary
+        self.total = total
+        self.done = done
+
+    def compose(self) -> ComposeResult:
+        yield GradientPanel(panel_title=f"gate · scope  ({self.epic_key})")
+
+    def on_mount(self) -> None:
+        head = Text()
+        head.append(f"{self.epic_key}  ", style="bold #c0caf5")
+        head.append(self.epic_summary or "", style="bold white")
+        head.append("\n\nfacts  ", style="bold #c0caf5")
+        head.append(f"{self.total} children · {self.done} done", style="white")
+        head.append(
+            "\n\nA feature you can vertically slice usually has one bounded, demoable "
+            "outcome. Judge this yourself — is there one sliceable thing under this "
+            "parent, or is it a container? Name what you're actually decomposing "
+            "(a specific feature, a plan doc, or 'reorg the undone tail'), and the "
+            "right parent for it.",
+            style="dim",
+        )
+        self._scope = Input(placeholder="what am I slicing, and under which parent?", id="scope-in")
+        self.query_one(GradientPanel).mount_content(
+            Static(head, id="scope-head"),
+            self._scope,
+            Static("[dim]enter to continue to strategy · esc cancel[/]", id="footer", markup=True),
+        )
+        self._scope.focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Input.Submitted)
+    def _submit(self, ev: Input.Submitted) -> None:
+        scope = ev.value.strip()
+        if not scope:
+            self.notify("state the scope — this is the judgment jg won't make for you", severity="warning")
+            return
+        self.dismiss(scope)
+
+
+class GateModal(ModalScreen["dict | None"]):
+    """Forces the architectural decision out of you before jg orchestrates Claude.
+    Renders a GateSpec at the pattern's progress.json level; blocks; returns
+    {'option': GateOption, 'reasoning': str} or None if cancelled.
+
+    Level 0: pick from full options (tradeoffs + failure modes supplied).
+    Level 1-2: less is supplied; you must type the reasoning jg no longer gives.
+    Level 3: no options shown — you propose the strategy and rationale yourself.
+    """
+
+    DEFAULT_CSS = """
+    GateModal { align: center middle; background: #000000 97%; }
+    GateModal GradientPanel { background: #1c1c1e; width: 84%; height: 82%; }
+    GateModal #gate-head { height: auto; margin: 0 0 1 0; }
+    GateModal #gate-reason { margin: 1 0 0 0; }
+    GateModal #footer { color: $text-muted; }
+    GateModal ListView { background: transparent; height: auto; max-height: 60%; }
+    GateModal ListView > ListItem { background: transparent; padding: 0 0 1 0; }
+    GateModal .pruned { color: $text-muted; margin: 1 0 0 0; }
+    """
+
+    BINDINGS = [  # noqa: RUF012
+        Binding("escape", "cancel", "cancel", show=False),
+    ]
+
+    def __init__(self, spec: gates.GateSpec, level: int):
+        super().__init__()
+        self.spec = spec
+        self.level = level
+        self._options_list: ListView | None = None
+        self._reason_input: Input | None = None
+        self._chosen: gates.GateOption | None = None
+
+    def compose(self) -> ComposeResult:
+        yield GradientPanel(panel_title=f"gate · {self.spec.title}  [level {self.level}]")
+
+    async def on_mount(self) -> None:
+        panel = self.query_one(GradientPanel)
+        head = Text()
+        head.append("contradiction  ", style="bold #c0caf5")
+        head.append(self.spec.contradiction, style="white")
+        head.append("\n\ngoal  ", style="bold #c0caf5")
+        head.append(self.spec.goal, style="white")
+        widgets: list[Any] = [Static(head, id="gate-head")]
+
+        if self.level < 3:
+            self._options_list = ListView(*[_GateOptionItem(o, self.level) for o in self.spec.options])
+            widgets.append(self._options_list)
+            if self.level <= 1 and self.spec.pruned:
+                pruned = Text("pruned: " + " · ".join(self.spec.pruned), style="dim")
+                widgets.append(Static(pruned, classes="pruned"))
+
+        placeholder = (
+            "propose your strategy + why (options withheld at this level)"
+            if self.level >= 3
+            else "your reasoning — name the tradeoff you're accepting (required)"
+        )
+        self._reason_input = Input(placeholder=placeholder, id="gate-reason")
+        widgets.append(self._reason_input)
+
+        hint = (
+            "select an option (enter) then enter again to commit · esc cancel"
+            if self.level < 3
+            else "type your proposal, enter to commit · esc cancel"
+        )
+        widgets.append(Static(f"[dim]{hint}[/]", id="footer", markup=True))
+
+        panel.mount_content(*widgets)
+        if self._options_list is not None:
+            self._options_list.focus()
+        else:
+            self._reason_input.focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(ListView.Selected)
+    def _pick(self, ev: ListView.Selected) -> None:
+        if isinstance(ev.item, _GateOptionItem):
+            self._chosen = ev.item.opt
+            self.notify(f"chose {self._chosen.name} — enter to commit (or add reasoning)", timeout=3)
+            if self._reason_input is not None:
+                self._reason_input.focus()
+
+    @on(Input.Submitted)
+    def _commit(self, ev: Input.Submitted) -> None:
+        reasoning = ev.value.strip()
+        if self.level >= 3:
+            if not reasoning:
+                self.notify("propose a strategy + rationale first", severity="warning")
+                return
+            self.dismiss({"option": None, "reasoning": reasoning})
+            return
+        if self._chosen is None:
+            # highlight → choose if the user typed without selecting
+            item = self._options_list.highlighted_child if self._options_list else None
+            if isinstance(item, _GateOptionItem):
+                self._chosen = item.opt
+        if self._chosen is None:
+            self.notify("select an option first", severity="warning")
+            return
+        if not reasoning:
+            self.notify("name the tradeoff you're accepting — required at every level", severity="warning")
+            return
+        self.dismiss({"option": self._chosen, "reasoning": reasoning})
+
+
+class RoadmapModal(ModalScreen[None]):
+    """Portfolio altitude — every epic with child progress, active work on top.
+    Read-only; enter/o opens the highlighted epic in the browser."""
+
+    DEFAULT_CSS = """
+    RoadmapModal {
+        align: center middle;
+        background: #000000 97%;
+    }
+    RoadmapModal GradientPanel {
+        background: #1c1c1e;
+        width: 88%;
+        height: 85%;
+    }
+    RoadmapModal #title { text-style: bold; margin: 0 0 1 0; }
+    RoadmapModal #footer { color: $text-muted; }
+    RoadmapModal ListView { background: transparent; }
+    RoadmapModal ListView > ListItem { background: transparent; padding: 0; }
+    """
+
+    BINDINGS = [  # noqa: RUF012
+        Binding("escape", "close", "close", show=False),
+        Binding("q", "close", "close", show=False),
+        Binding("r", "refresh", "refresh", show=True),
+        Binding("o", "open_browser", "browser", show=True),
+        Binding("d", "decompose", "decompose→tasks", show=True),
+    ]
+
+    def __init__(self, config: Config):
+        super().__init__()
+        self.config = config
+        self.body_scroll: VerticalScroll | None = None
+        self._list: ListView | None = None
+
+    def compose(self) -> ComposeResult:
+        yield GradientPanel(panel_title="roadmap")
+
+    async def on_mount(self) -> None:
+        panel = self.query_one(GradientPanel)
+        self._title_static = Static("[dim]loading epics…[/]", id="title", markup=True)
+        self.body_scroll = VerticalScroll()
+        self._footer_static = Static(
+            "[dim][bold #c0caf5]actions[/]  enter/o open epic · d decompose→tasks · r refresh · esc close[/]",
+            id="footer", markup=True,
+        )
+        panel.mount_content(self._title_static, self.body_scroll, self._footer_static)
+        self.run_worker(self._load())
+
+    async def _load(self) -> None:
+        try:
+            epics = await roadmap.fetch_roadmap(self.config)
+        except Exception as e:  # network/unexpected
+            self._title_static.update(f"[red]load failed: {type(e).__name__}[/]")
+            return
+        if self.body_scroll is None:
+            return
+        await self.body_scroll.remove_children()
+        if not epics:
+            self._title_static.update("[yellow]no epics[/]")
+            await self.body_scroll.mount(Static(f"[dim]{roadmap.effective_jql(self.config)}[/]", markup=True))
+            return
+        self._title_static.update(Text(f"Roadmap · {len(epics)} epics", style="bold #c0caf5"))
+        self._list = ListView(*[_EpicItem(e, self.config.default_cloud_url) for e in epics])
+        await self.body_scroll.mount(self._list)
+        self._list.focus()
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    async def action_refresh(self) -> None:
+        self.run_worker(self._load())
+        self.app.notify("refreshing…", severity="information")
+
+    def action_open_browser(self) -> None:
+        self._open(self._list.highlighted_child if self._list else None)
+
+    @on(ListView.Selected)
+    def _selected(self, ev: ListView.Selected) -> None:
+        self._open(ev.item)
+
+    def _open(self, item: Any) -> None:
+        import webbrowser
+
+        if isinstance(item, _EpicItem) and item.url:
+            webbrowser.open(item.url)
+            self.app.notify(f"opened {item.epic_key}", severity="information")
+        else:
+            self.app.notify("no cloud_url configured", severity="warning")
+
+    def action_decompose(self) -> None:
+        """Gated orchestration, two stages: scope (judgment jg won't make) →
+        strategy (rendered at your progress.json level) → Claude authors."""
+        item = self._list.highlighted_child if self._list else None
+        if not isinstance(item, _EpicItem):
+            self.app.notify("highlight an epic first", severity="warning")
+            return
+        self.app.push_screen(
+            ScopeGateModal(item.epic_key, item.epic_summary, item.epic_total, item.epic_done),
+            lambda scope: self._after_scope(item, scope),
+        )
+
+    def _after_scope(self, item: _EpicItem, scope: str | None) -> None:
+        if not scope:
+            return  # cancelled at the scope gate → no orchestration
+        spec = gates.EPIC_DECOMPOSE
+        level = progress.read_level(spec.pattern)
+        self.app.push_screen(GateModal(spec, level), lambda d: self._after_gate(item, scope, d))
+
+    def _after_gate(self, item: _EpicItem, scope: str, decision: dict | None) -> None:
+        if not decision:
+            return  # cancelled the strategy gate → no orchestration
+        spec = gates.EPIC_DECOMPOSE
+        option = decision["option"]
+        if option is None:  # level-3 free proposal — pass it through as reasoning
+            option = gates.GateOption(name="(self-proposed)", optimizes="", sacrifices="",
+                                      failure_mode="(watch your own stated risks)")
+        prompt = gates.build_decompose_prompt(option, item.epic_key, item.epic_summary, scope, decision["reasoning"])
+        cmd = f"{self.config.ai.claude_path} {quote_for_shell(prompt)}"
+        # Scope Claude to the epic's mapped project dir, if any.
+        cwd: str | None = None
+        for p in self.config.projects:
+            if item.epic_key in p.jql:
+                base = projectdocs.project_base(p)
+                if base and base.is_dir():
+                    cwd = str(base)
+                    break
+        try:
+            if cwd:
+                spawn_in_dir(cmd, cwd=cwd, title=f"decompose·{item.epic_key}", config=self.config.tmux)
+            else:
+                spawn(cmd, title=f"decompose·{item.epic_key}", config=self.config.tmux)
+        except RuntimeError as e:
+            self.app.notify(str(e), severity="error")
+            return
+        progress.record_use(spec.pattern)
+        self.app.notify(
+            f"orchestrating {option.name} decomposition of {item.epic_key}", severity="information"
+        )
+
+
 class GradientPanel(Vertical):
     """A container with a per-character gradient border.
 
@@ -2239,6 +2912,8 @@ class HelpScreen(ModalScreen[None]):
         ("tab", "swap Kanban ⇄ Code (medium/narrow widths)"),
         ("esc", "narrow-mode: detail → projects picker"),
         ("enter (item)", "open detail modal (ticket / PR / repo)"),
+        ("p", "project workspace: plan · research · docs & memory · work roll-up"),
+        ("g", "roadmap: all epics with child progress (portfolio altitude)"),
         ("t / a / c", "transition / assign / comment (ticket-only)"),
         ("m", "move ticket to sprint or backlog (needs board_id in project config)"),
         ("A", "claude pane: /issue (ticket) · /review (PR) · in dir (repo)"),
@@ -2487,6 +3162,8 @@ class ChDashboard(App):
         Binding("ctrl+a", "ai_on_card_force", "re-pick AI dir", show=False),
         Binding("ctrl+e", "editor_on_card_force", "re-pick editor dir", show=False),
         Binding("B", "brainstorm", "brainstorm", show=True),
+        Binding("p", "project_overview", "project", show=True),
+        Binding("g", "roadmap", "roadmap", show=True),
         Binding("enter", "open_detail", "open", show=True),
         Binding("o", "open_browser", "browser", show=True),
         Binding("slash", "focus_filter", "filter", show=True),
@@ -3483,6 +4160,43 @@ class ChDashboard(App):
             self.notify("focus a ticket first", severity="warning")
             return
         self.run_worker(self._open_card_detail(card))
+
+    def _highlighted_project(self) -> Project | None:
+        """The real project highlighted in a focused ProjectList, if any."""
+        node: Any = self.focused
+        while node is not None:
+            if isinstance(node, ProjectList):
+                item = node.highlighted_child
+                if isinstance(item, ProjectItem) and item.project is not None:
+                    return item.project
+                return None
+            node = getattr(node, "parent", None)
+        return None
+
+    async def action_project_overview(self) -> None:
+        """Open the read-only project workspace. Target: highlighted project →
+        current scoped project → pick one (if several configured)."""
+        project = self._highlighted_project() or self.current_project
+        if project is None:
+            projects = list(self.config.projects)
+            if not projects:
+                self.notify("no projects configured", severity="warning")
+                return
+            if len(projects) == 1:
+                project = projects[0]
+            else:
+                result = await self.push_screen_wait(ProjectPickerModal(projects))
+                if not result:
+                    return
+                kind, proj = result
+                if kind != "project" or proj is None:
+                    self.notify("pick a specific project for the overview", severity="information")
+                    return
+                project = proj
+        self.push_screen(ProjectDetailModal(project, self.config))
+
+    def action_roadmap(self) -> None:
+        self.push_screen(RoadmapModal(self.config))
 
     def action_open_browser(self) -> None:
         # Works on whichever list view is focused — kanban / PR / Repo.
