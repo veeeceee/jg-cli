@@ -12,6 +12,9 @@ three altitudes. Lenses, inbox, actions, and gate wiring land in later slices.
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
+import tempfile
 from typing import Any
 
 from rich.text import Text
@@ -29,7 +32,8 @@ from jg.config import Config
 from jg.render import GROUP_ORDER, GROUP_STYLE, normalize_status
 from jg.themes import ALL_THEMES
 from jg.tmux import quote_for_shell, spawn, spawn_in_dir
-from jg.tui import (  # reuse existing panel + kanban + action/gate modals
+from jg.tui import (  # reuse existing panel + kanban + action/gate/edit modals
+    PRIORITY_CYCLE,
     AssignModal,
     CommentModal,
     GateModal,
@@ -38,6 +42,8 @@ from jg.tui import (  # reuse existing panel + kanban + action/gate modals
     ScopeGateModal,
     TicketCard,
     TransitionModal,
+    _LabelsEdit,
+    _SummaryEdit,
 )
 
 # Lenses cut across the current altitude. Portfolio lenses span all initiatives
@@ -136,7 +142,11 @@ class WorkspaceApp(App):
         Binding("a", "assign", "assign", show=False),
         Binding("c", "comment", "comment", show=False),
         Binding("A", "claude", "claude", show=True),
-        Binding("d", "decompose", "decompose", show=True),
+        Binding("d", "d", "description / decompose", show=True),
+        Binding("e", "edit_summary", "summary", show=False),
+        Binding("P", "edit_priority", "priority", show=False),
+        Binding("L", "edit_labels", "labels", show=False),
+        Binding("T", "edit_testcases", "test cases", show=False),
         Binding("o", "open_browser", "browser", show=True),
     ]
 
@@ -725,6 +735,127 @@ class WorkspaceApp(App):
             return
         progress.record_use(gates.EPIC_DECOMPOSE.pattern)
         self.notify(f"orchestrating {option.name} decomposition of {e.key}", severity="information")
+
+    # ── editing (on the focused task) ──────────────────────────────────────────
+    async def _get_issue(self, key: str, fields: list[str]) -> dict | None:
+        try:
+            async with JiraClient(self.config) as api:
+                return await api.get_issue(key, fields=fields)
+        except Exception as e:
+            self.notify(self._notify_err(e), severity="error")
+            return None
+
+    async def _apply_edit(self, key: str, fields: dict, msg: str) -> None:
+        try:
+            async with JiraClient(self.config) as api:
+                await api.edit_issue(key, fields)
+        except Exception as e:
+            self.notify(f"edit failed: {e}", severity="error")
+            return
+        self._detail_cache.pop(key, None)  # force a re-fetch of the detail pane
+        self.notify(f"✓ {msg}", severity="information")
+        self.action_refresh()
+
+    def action_edit_summary(self) -> None:
+        self.run_worker(self._start_edit_summary())
+
+    async def _start_edit_summary(self) -> None:
+        key = self._focused_task_key()
+        if not key:
+            self.notify("focus a task first", severity="warning")
+            return
+        issue = await self._get_issue(key, ["summary"])
+        if issue is None:
+            return
+        current = (issue.get("fields") or {}).get("summary", "")
+
+        def cb(new: str | None) -> None:
+            if new and new != current:
+                self.run_worker(self._apply_edit(key, {"summary": new}, "summary updated"))
+
+        self.app.push_screen(_SummaryEdit(current), cb)
+
+    def action_edit_labels(self) -> None:
+        self.run_worker(self._start_edit_labels())
+
+    async def _start_edit_labels(self) -> None:
+        key = self._focused_task_key()
+        if not key:
+            self.notify("focus a task first", severity="warning")
+            return
+        issue = await self._get_issue(key, ["labels"])
+        if issue is None:
+            return
+        current = (issue.get("fields") or {}).get("labels") or []
+
+        def cb(new: list[str] | None) -> None:
+            if new is not None and new != current:
+                self.run_worker(self._apply_edit(key, {"labels": new}, "labels updated"))
+
+        self.app.push_screen(_LabelsEdit(current), cb)
+
+    def action_edit_priority(self) -> None:
+        self.run_worker(self._cycle_priority())
+
+    async def _cycle_priority(self) -> None:
+        key = self._focused_task_key()
+        if not key:
+            self.notify("focus a task first", severity="warning")
+            return
+        issue = await self._get_issue(key, ["priority"])
+        if issue is None:
+            return
+        current = ((issue.get("fields") or {}).get("priority") or {}).get("name", "Medium")
+        try:
+            idx = PRIORITY_CYCLE.index(current)
+        except ValueError:
+            idx = len(PRIORITY_CYCLE) // 2
+        nxt = PRIORITY_CYCLE[(idx + 1) % len(PRIORITY_CYCLE)]
+        await self._apply_edit(key, {"priority": {"name": nxt}}, f"priority → {nxt}")
+
+    def action_d(self) -> None:
+        # d is contextual: decompose an epic at the initiative altitude, else
+        # edit the focused task's description.
+        if self.altitude == "initiative":
+            self.action_decompose()
+            return
+        key = self._focused_task_key()
+        if not key:
+            self.notify("focus a task first", severity="warning")
+            return
+        self.run_worker(self._edit_via_editor(key, "description"))
+
+    def action_edit_testcases(self) -> None:
+        key = self._focused_task_key()
+        if not key:
+            self.notify("focus a task first", severity="warning")
+            return
+        self.run_worker(self._edit_via_editor(key, "customfield_10186"))
+
+    async def _edit_via_editor(self, key: str, jira_field: str) -> None:
+        """Edit an ADF field (description / test cases) in $EDITOR, write back as ADF."""
+        issue = await self._get_issue(key, [jira_field])
+        if issue is None:
+            return
+        current = render_to_text((issue.get("fields") or {}).get(jira_field))
+        editor = os.environ.get("EDITOR", "vi")
+        with tempfile.NamedTemporaryFile("w+", suffix=".md", delete=False) as f:
+            f.write(current)
+            path = f.name
+        try:
+            with self.app.suspend():
+                subprocess.run([editor, path], check=False)
+            with open(path) as fh:
+                new = fh.read().strip()
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        if new == current.strip():
+            self.notify("unchanged", severity="information")
+            return
+        await self._apply_edit(key, {jira_field: text_to_adf(new) if new else None}, f"{jira_field} updated")
 
 
 def run_workspace(config: Config) -> None:
