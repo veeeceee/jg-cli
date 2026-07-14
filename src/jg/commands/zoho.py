@@ -68,6 +68,6 @@ def auth(ctx: click.Context) -> None:
     console.print("[green]✓[/] Zoho authorized.")
     if not config.zoho.org_id or not config.zoho.agent_emails:
         console.print(
-            "[yellow]Next:[/] add [dim]org_id[/] and [dim]agent_emails[/] under [zoho] in "
+            r"[yellow]Next:[/] add [dim]org_id[/] and [dim]agent_emails[/] under \[zoho] in "
             "~/.config/jg/config.toml so involvement detection works."
         )
