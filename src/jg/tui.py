@@ -65,7 +65,7 @@ from textual.widgets import (
 )
 
 from jg import _compat as _jg_compat
-from jg import gates, progress, projectdocs, roadmap
+from jg import gates, progress, projectdocs, roadmap, zoho
 from jg.adf import render_to_text, text_to_adf
 from jg.api import ApiError, JiraClient
 from jg.auth import AuthError
@@ -421,10 +421,26 @@ class RepoList(ListView):
             await self.append(RepoItem(r, local))
 
 
+class ZohoRow(ListItem):
+    """A Zoho Desk support ticket I'm involved in, shown in the Inbox tab.
+    Opens in the browser (no local detail modal)."""
+
+    def __init__(self, ticket: zoho.InvolvedTicket):
+        self.web_url = ticket.web_url
+        self.ticket_number = ticket.ticket_number
+        line = Text()
+        line.append("⛑ ", style="orange3")
+        line.append(f"#{ticket.ticket_number}  ", style="bold #c0caf5")
+        line.append("[" + " ".join(ticket.involvement) + "] ", style="magenta")
+        line.append(f"{ticket.status}  ", style="cyan")
+        line.append(ticket.subject[:44])
+        super().__init__(Static(line))
+
+
 class InboxList(ListView):
-    """Inbound tickets assigned to me across all projects (unscoped) — the
-    triage side of the Code sidebar. Holds TicketCards, so it inherits the
-    dashboard's card actions (open/t/a/c/A) via _focused_card for free."""
+    """Inbound work in the Code sidebar: my open Jira tickets (across all
+    projects) as TicketCards — inheriting card actions via _focused_card — plus
+    open Zoho Desk support tickets I'm involved in (ZohoRow, opens in browser)."""
 
     can_focus = True
 
@@ -432,6 +448,10 @@ class InboxList(ListView):
         await self.clear()
         for issue in issues:
             await self.append(TicketCard(issue, sp_field))
+
+    async def append_zoho(self, tickets: list[zoho.InvolvedTicket]) -> None:
+        for t in tickets:
+            await self.append(ZohoRow(t))
 
 
 # ───────────────────────────── projects panel ─────────────────────────────
@@ -3637,6 +3657,19 @@ class ChDashboard(App):
         except Exception:
             return
         await inbox.set_issues(data.get("issues", []), sp)
+        await inbox.append_zoho(await self._fetch_zoho_inbox())
+
+    async def _fetch_zoho_inbox(self) -> list[zoho.InvolvedTicket]:
+        """Open Zoho Desk tickets I'm involved in (closed ones are history, not
+        inbox). Empty + silent if Zoho isn't configured or the call fails."""
+        if not self.config.zoho.is_setup:
+            return []
+        try:
+            async with zoho.ZohoClient(self.config) as client:
+                tickets = await zoho.find_involved(client, self.config.zoho)
+        except Exception:
+            return []
+        return [t for t in tickets if (t.status or "").lower() != "closed"][:20]
 
     async def _load_prs(self) -> None:
         try:
@@ -4191,11 +4224,24 @@ class ChDashboard(App):
         self.notify(f"✓ commented on {key}", severity="information")
 
     def action_open_detail(self) -> None:
+        focused = self.focused
+        if isinstance(focused, ListView) and isinstance(focused.highlighted_child, ZohoRow):
+            self._open_zoho(focused.highlighted_child)
+            return
         card = self._focused_card()
         if not card:
             self.notify("focus a ticket first", severity="warning")
             return
         self.run_worker(self._open_card_detail(card))
+
+    def _open_zoho(self, row: ZohoRow) -> None:
+        if not row.web_url:
+            self.notify("no URL for this ticket", severity="warning")
+            return
+        import webbrowser
+
+        webbrowser.open(row.web_url)
+        self.notify(f"opened Zoho #{row.ticket_number}", severity="information")
 
     def _highlighted_project(self) -> Project | None:
         """The real project highlighted in a focused ProjectList, if any."""
@@ -4239,6 +4285,9 @@ class ChDashboard(App):
         focused = self.focused
         if isinstance(focused, ListView):
             item = focused.highlighted_child
+            if isinstance(item, ZohoRow):
+                self._open_zoho(item)
+                return
             if isinstance(item, PRItem):
                 self._open_pr_browser(item.pr)
                 return
