@@ -220,14 +220,17 @@ class _SidebarTabs(Vertical):
     _SidebarTabs { width: 1fr; height: 1fr; background: transparent; }
     """
 
-    def __init__(self, mine_pr: PRList, rr_pr: PRList, repo_list: RepoList):
+    def __init__(self, inbox: InboxList, mine_pr: PRList, rr_pr: PRList, repo_list: RepoList):
         super().__init__()
+        self._inbox = inbox
         self._mine_pr = mine_pr
         self._rr_pr = rr_pr
         self._repo_list = repo_list
 
     def compose(self) -> ComposeResult:
         with TabbedContent(id="sidebar-tabs"):
+            with TabPane("Inbox"):
+                yield self._inbox
             with TabPane("My PRs"):
                 yield self._mine_pr
             with TabPane("Waiting on me"):
@@ -416,6 +419,19 @@ class RepoList(ListView):
                 elif candidate_full.is_dir():
                     local = str(candidate_full)
             await self.append(RepoItem(r, local))
+
+
+class InboxList(ListView):
+    """Inbound tickets assigned to me across all projects (unscoped) — the
+    triage side of the Code sidebar. Holds TicketCards, so it inherits the
+    dashboard's card actions (open/t/a/c/A) via _focused_card for free."""
+
+    can_focus = True
+
+    async def set_issues(self, issues: list[dict[str, Any]], sp_field: str | None = None) -> None:
+        await self.clear()
+        for issue in issues:
+            await self.append(TicketCard(issue, sp_field))
 
 
 # ───────────────────────────── projects panel ─────────────────────────────
@@ -3205,6 +3221,7 @@ class ChDashboard(App):
         super().__init__()
         self.config = config
         self.columns: dict[str, KanbanColumn] = {}
+        self.inbox_list: InboxList | None = None
         self.mine_pr: PRList | None = None
         self.rr_pr: PRList | None = None
         self.search_input: Input | None = None
@@ -3266,12 +3283,13 @@ class ChDashboard(App):
             yield GradientPanel(kanban_inner, panel_title="Tasks", id="kanban-wrap")
 
             # Code sidebar
+            self.inbox_list = InboxList(id="inbox")
             self.mine_pr = PRList(id="prs-mine")
             self.rr_pr = PRList(id="prs-rr")
             self.repo_list = RepoList(id="repos")
             # TabbedContent doesn't accept TabPane positional args; build
             # it via a helper compose.
-            tabs = _SidebarTabs(self.mine_pr, self.rr_pr, self.repo_list)
+            tabs = _SidebarTabs(self.inbox_list, self.mine_pr, self.rr_pr, self.repo_list)
             yield GradientPanel(tabs, panel_title="Code", id="sidebar")
         self.status = Static("loading…", id="status")
         yield self.status
@@ -3505,7 +3523,7 @@ class ChDashboard(App):
         if self.status:
             self.status.update("[yellow]loading sprint + PRs…[/]")
         try:
-            await asyncio.gather(self._load_sprint(), self._load_prs())
+            await asyncio.gather(self._load_sprint(), self._load_prs(), self._load_inbox())
         except AuthError as e:
             self._notify_auth_error(e)
             if self.status:
@@ -3601,6 +3619,24 @@ class ChDashboard(App):
         # Re-apply current filter if any.
         if self.search_input and self.search_input.value:
             await self._apply_filter(self.search_input.value)
+
+    async def _load_inbox(self) -> None:
+        """My open tickets across all projects (unscoped) — the sidebar Inbox."""
+        sp = self.config.fields.story_points or None
+        fields = ["summary", "status", "priority", "issuetype", "updated"]
+        if sp:
+            fields.append(sp)
+        jql = "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
+        try:
+            async with JiraClient(self.config) as api:
+                data = await api.search_jql(jql, fields=fields, max_results=100)
+        except Exception:
+            return  # inbox is supplementary — never break the refresh
+        try:
+            inbox = self.query_one("#inbox", InboxList)
+        except Exception:
+            return
+        await inbox.set_issues(data.get("issues", []), sp)
 
     async def _load_prs(self) -> None:
         try:
