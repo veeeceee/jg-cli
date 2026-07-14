@@ -39,7 +39,7 @@ async def zoho(ctx: click.Context) -> None:
         line = Text()
         line.append(f"#{t.ticket_number:<9}", style="bold #c0caf5")
         line.append(" [" + " ".join(t.involvement) + "] ", style="magenta")
-        line.append(f"{t.status:<12}", style="cyan")
+        line.append(f"{t.status[:14]:<14}  ", style="cyan")
         line.append(t.subject[:48])
         console.print(line)
 

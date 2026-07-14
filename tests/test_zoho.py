@@ -45,12 +45,19 @@ def _mk_client():
     # assigned to me but my email is NOT in any searchable text → only caught by
     # the direct assignee query, not the _all email search.
     t6 = {"id": "6", "ticketNumber": "106", "subject": "no email here", "assigneeId": "A1", "status": "Open", "modifiedTime": "2026-07-06"}
+    # tagged me in a comment; my email absent, not assigned to me → only findable
+    # by searching my zuid (the mention markup is indexed under _all).
+    t7 = {"id": "7", "ticketNumber": "107", "subject": "someone tagged me", "assigneeId": "OTHER", "status": "Open", "modifiedTime": "2026-06-29"}
     search = {
         "vibhu@charmhealthtech.com": [t1, t5],
         "vibhu.c@medicalmine.com": [t2, t3, t4],
+        "Z1": [t7],  # zuid search
     }
     convs = {"1": [{"to": "vibhu@charmhealthtech.com", "cc": "", "fromEmailAddress": "x@y.com"}]}
-    comments = {"3": [{"content": "please review zsu[@user:Z1]zsu thanks"}]}
+    comments = {
+        "3": [{"content": "please review zsu[@user:Z1]zsu thanks"}],
+        "7": [{"content": "zsu[@user:Z1]zsu plz check this"}],
+    }
     return FakeClient(agents, search, convs, comments, by_assignee={"A1": [t6]})
 
 
@@ -74,10 +81,11 @@ async def test_find_involved_classifies_and_drops_false_positives():
     assert by_id["1"] == ["THREAD"]            # my email in a thread's to/cc
     assert by_id["3"] == ["MENTIONED"]         # my zuid in a comment's @mention
     assert by_id["5"] == ["BODY"]              # my exact email in the subject
+    assert by_id["7"] == ["MENTIONED"]         # tagged me; found only via the zuid search
     assert "4" not in by_id                    # fuzzy _all match, no real involvement → dropped
 
     # sorted newest-first by modifiedTime
-    assert [t.id for t in result] == ["6", "1", "5", "2", "3"]
+    assert [t.id for t in result] == ["6", "1", "5", "2", "3", "7"]
 
 
 @pytest.mark.asyncio

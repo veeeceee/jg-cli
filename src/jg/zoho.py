@@ -212,6 +212,12 @@ async def find_involved(client: ZohoClient, config: ZohoConfig) -> list[Involved
     for email in emails:
         for t in await client.search_tickets(email):
             candidates[str(t.get("id"))] = t
+    # Zoho's _all index reaches comment content, and @mentions are stored as
+    # `zsu[@user:{zuid}]zsu` — so searching the zuid catches "someone tagged me
+    # to look at this" tickets that have neither my email nor my assignment.
+    for zuid in my_zuids:
+        for t in await client.search_tickets(zuid):
+            candidates.setdefault(str(t.get("id")), t)
     for agent_id in my_agent_ids:
         for t in await client.search_by_assignee(agent_id):
             candidates.setdefault(str(t.get("id")), t)
