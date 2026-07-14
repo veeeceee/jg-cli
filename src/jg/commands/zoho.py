@@ -40,7 +40,9 @@ async def zoho(ctx: click.Context) -> None:
         line.append(f"#{t.ticket_number:<9}", style="bold #c0caf5")
         line.append(" [" + " ".join(t.involvement) + "] ", style="magenta")
         line.append(f"{t.status[:14]:<14}  ", style="cyan")
-        line.append(t.subject[:48])
+        link = "→ " + ",".join(t.jira_keys) if t.jira_keys else "○ unlinked"
+        line.append(f"{link:<16}", style="green" if t.jira_keys else "dim")
+        line.append("  " + t.subject[:40])
         console.print(line)
 
 

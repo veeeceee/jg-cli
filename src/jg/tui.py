@@ -433,7 +433,11 @@ class ZohoRow(ListItem):
         line.append(f"#{ticket.ticket_number}  ", style="bold #c0caf5")
         line.append("[" + " ".join(ticket.involvement) + "] ", style="magenta")
         line.append(f"{ticket.status}  ", style="cyan")
-        line.append(ticket.subject[:44])
+        if ticket.jira_keys:
+            line.append("→ " + ",".join(ticket.jira_keys) + "  ", style="green")
+        else:
+            line.append("○ unlinked  ", style="dim")
+        line.append(ticket.subject[:40])
         super().__init__(Static(line))
 
 

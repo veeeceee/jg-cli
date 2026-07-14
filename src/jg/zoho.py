@@ -14,6 +14,7 @@ exists, so mention/thread detection is per-candidate, not desk-wide.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -23,6 +24,8 @@ import keyring
 
 from jg.auth import KEYRING_SERVICE
 from jg.config import Config, ZohoConfig
+
+_JIRA_KEY_RE = re.compile(r"[A-Z][A-Z0-9]+-\d+")
 
 KEY_CLIENT_SECRET = "zoho.client_secret"
 KEY_REFRESH_TOKEN = "zoho.refresh_token"
@@ -175,7 +178,12 @@ class InvolvedTicket:
     assignee: str
     web_url: str
     involvement: list[str] = field(default_factory=list)  # ASSIGNED / THREAD / MENTIONED / BODY
+    jira_keys: list[str] = field(default_factory=list)    # linked Jira issues (Zoho custom field)
     modified: str = ""
+
+    @property
+    def is_linked(self) -> bool:
+        return bool(self.jira_keys)
 
 
 async def resolve_identity(client: ZohoClient, emails: list[str]) -> dict[str, dict]:
@@ -193,6 +201,16 @@ def _thread_addresses(conv: dict) -> str:
     """All address text in a thread (to/cc/from), lowercased, for substring checks."""
     parts = [conv.get("to", ""), conv.get("cc", ""), conv.get("fromEmailAddress", "")]
     return " ".join(p for p in parts if p).lower()
+
+
+def _jira_keys(t: dict) -> list[str]:
+    """Linked Jira keys from Zoho's 'Associated Jira Issue Keys' custom field
+    (display-name or api-name form). Regex-extracts keys, tolerating whatever
+    delimiter/format the field holds (single, comma-separated, or a URL)."""
+    raw = (t.get("customFields") or {}).get("Associated Jira Issue Keys")
+    if not raw:
+        raw = (t.get("cf") or {}).get("cf_associated_jira_issue_keys")
+    return _JIRA_KEY_RE.findall(str(raw)) if raw else []
 
 
 async def find_involved(client: ZohoClient, config: ZohoConfig) -> list[InvolvedTicket]:
@@ -260,6 +278,7 @@ async def find_involved(client: ZohoClient, config: ZohoConfig) -> list[Involved
                 or "—",
                 web_url=t.get("webUrl", ""),
                 involvement=types,
+                jira_keys=_jira_keys(t),
                 modified=t.get("modifiedTime", ""),
             )
         )

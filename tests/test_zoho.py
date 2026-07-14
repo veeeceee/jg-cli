@@ -39,7 +39,7 @@ def _mk_client():
     agents = [{"id": "A1", "emailId": "vibhu.c@medicalmine.com", "zuid": "Z1"}]
     t1 = {"id": "1", "ticketNumber": "101", "subject": "thread one", "assigneeId": "OTHER", "status": "Open", "modifiedTime": "2026-07-05"}
     t5 = {"id": "5", "ticketNumber": "105", "subject": "ping vibhu.c@medicalmine.com re x", "assigneeId": "OTHER", "status": "Open", "modifiedTime": "2026-07-04"}
-    t2 = {"id": "2", "ticketNumber": "102", "subject": "assigned", "assigneeId": "A1", "status": "Open", "modifiedTime": "2026-07-03"}
+    t2 = {"id": "2", "ticketNumber": "102", "subject": "assigned", "assigneeId": "A1", "status": "Open", "modifiedTime": "2026-07-03", "customFields": {"Associated Jira Issue Keys": "CH-999"}}
     t3 = {"id": "3", "ticketNumber": "103", "subject": "mentioned", "assigneeId": "OTHER", "status": "Open", "modifiedTime": "2026-07-02"}
     t4 = {"id": "4", "ticketNumber": "104", "subject": "a different Vibhu entirely", "assigneeId": "OTHER", "status": "Open", "modifiedTime": "2026-07-01"}
     # assigned to me but my email is NOT in any searchable text → only caught by
@@ -86,6 +86,11 @@ async def test_find_involved_classifies_and_drops_false_positives():
 
     # sorted newest-first by modifiedTime
     assert [t.id for t in result] == ["6", "1", "5", "2", "3", "7"]
+
+    # linked-Jira status from the Zoho custom field
+    linked = {t.id: t.jira_keys for t in result}
+    assert linked["2"] == ["CH-999"] and result[3].is_linked  # id 2 is at index 3
+    assert linked["1"] == [] and not result[1].is_linked      # unlinked
 
 
 @pytest.mark.asyncio
