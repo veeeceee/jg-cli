@@ -1,4 +1,4 @@
-"""ch dashboard — Textual TUI."""
+"""jg dashboard — the altitude workspace (Inbox → Portfolio → Initiative → Task)."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from jg.config import Config
 @click.command()
 @click.pass_context
 def dashboard(ctx: click.Context) -> None:
-    """Open the TUI dashboard (kanban + PR sidebar)."""
+    """Open the workspace: Inbox → Portfolio → Initiative → Task."""
     config: Config = ctx.obj["config"]
-    from jg.tui import run_dashboard
+    from jg.workspace import run_workspace
 
-    run_dashboard(config)
+    run_workspace(config)

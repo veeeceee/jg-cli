@@ -13,15 +13,13 @@ Same Atlassian OAuth as the Claude MCP server — no API token needed. GitHub vi
 
 ## Features
 
-**TUI dashboard** (`jg dashboard`)
-- Kanban view (sprint / backlog / all / recent tabs) with per-column semantic gradients
-- Code panel: My PRs, Waiting on Review, Repos list
-- Projects panel scopes both panels by JQL filter + repo list
-- Responsive: 3-tier layout (wide / medium / narrow drill-down) adapts to terminal width
-- `A` key on any ticket/PR/repo opens a Claude Code tmux pane with context pre-loaded
-- `E` key opens an editor (nvim by default) in a tmux split at the repo's local path
-- Focus-driven refresh: switching back to the dashboard pane auto-refreshes tickets
-- macOS notifications for new PRs and incoming review requests
+**TUI dashboard** (`jg dashboard`) — an altitude workspace, not fixed panels
+- One navigable ladder with an always-on breadcrumb: **Inbox → Portfolio → Initiative → Task**
+- Cold-start **Inbox**: inbound work with no home in your tree — external review requests + tickets assigned to you
+- **Lenses** (`[` / `]`) per altitude: Portfolio = Roadmap / Sprint (your sprint tasks across all initiatives); Initiative = Board / Mine
+- **Actions at any altitude**: `t`/`a`/`c` transition/assign/comment, `A` claude (`/issue`, project dir, or `/review`), `o` browser
+- `d` on an initiative runs the two-stage **decompose gate** (scope → strategy, rendered at your mastery level)
+- Model: the tree holds work you own; the Inbox holds work that arrives at you; a PR is a task's closing state
 
 **CLI commands**
 | Command | What it does |
@@ -114,30 +112,25 @@ jg dashboard          # open TUI
 uv run jg dashboard   # run from source without installing
 ```
 
-## Dashboard keybindings
+## Dashboard keybindings (altitude workspace)
 
 ```
-h/l ←→        cycle Projects → Kanban → Code (or use arrow keys)
-j/k ↑↓        navigate within list
-enter         open detail modal
-p             project workspace (plan · research · docs & memory · work)
-g             roadmap (all epics with child progress)
-1/2/3/4       Kanban tabs: sprint / backlog / all / recent
-[/]           cycle tabs of focused panel (Kanban or Code)
-tab           swap Kanban ⇄ Code (medium/narrow widths)
-A             Claude Code pane: /issue (ticket) · /review (PR) · cwd (repo)
-E             Editor pane at repo/ticket directory
-B             Brainstorm new tickets with project context
-t / a / c     Transition / assign / comment focused ticket
-o             Open in browser
-/             Filter cards
-r             Refresh
-?             Help
-q             Quit
-ctrl+p        Command palette (includes theme cycle)
+enter / l →   descend an altitude (Portfolio → Initiative → Task)
+esc / h ←     ascend, walking back toward home (Inbox)
+j/k ↑↓        navigate within the current list
+i             go to Inbox (home)        p   go to Portfolio (the tree)
+[ / ]         cycle lenses at this altitude
+t / a / c     transition / assign / comment the focused task
+A             claude: /issue (task) · project dir (epic) · /review (inbox PR)
+d             decompose an initiative into tasks (two-stage gate)
+o             open the focused item in the browser
+r             refresh          q   quit
 ```
 
-**Ticket detail modal:** `t a c · e summary · d description · T tests · p priority · l labels · o A E`
+Not yet ported from the retired 3-panel dashboard: full ticket editing
+(`e`/`d`/`T`/`p`/`l`/`m`), PR-detail/merge modal, Repos view, `E` editor,
+`/` filter, story-point chips, command palette, Docs/research lens, and the
+background macOS notifier.
 
 ## Development
 

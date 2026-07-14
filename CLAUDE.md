@@ -29,7 +29,8 @@ src/jg/
 ├── roadmap.py          # portfolio altitude: fetch epics + batch-tally child status (progress/done/blocked); effective_jql, progress_bar
 ├── gates.py            # task-typed orchestration gates (declarative GateSpec/GateOption); EPIC_DECOMPOSE + build_decompose_prompt
 ├── progress.py         # reads/updates ~/.ai/progress.json (scaffolding level per pattern); read_level, record_use
-├── tui.py              # Textual dashboard (main TUI module) incl. ProjectDetailModal (`p`) + RoadmapModal (`g`) + GateModal
+├── workspace.py        # THE dashboard shell (WorkspaceApp): altitude ladder Inbox→Portfolio→Initiative→Task, lenses, actions, gate. `jg dashboard` launches this.
+├── tui.py              # component library: GradientPanel, themes glue, all action/detail/gate modals (reused by workspace.py). ChDashboard (old 3-panel shell) is RETIRED/unreferenced here — kept only until its modals are extracted; safe to prune later.
 └── commands/           # one click command per file
     ├── auth.py         # jg auth setup/login/logout/status
     ├── sprint.py       # jg sprint
@@ -63,9 +64,34 @@ uv run jg dashboard      # run from source without installing
 uv run pytest -q         # tests (32 passing — pure helpers)
 ```
 
-## TUI dashboard structure
+## Dashboard — altitude workspace (`jg dashboard` → `workspace.py`)
 
-The app is **master + dual-detail**: the Projects panel (master) scopes two sibling detail panes — Kanban (tickets) and Code (PRs + repos). Both detail panes own tab strips for their own sub-views; the top chrome only shows project context.
+The dashboard is an **altitude ladder**, not fixed panels. One navigable spine
+with an always-on breadcrumb; the fast actions work at every altitude.
+
+- **Home = Inbox** (cold-start): inbound work with no place in the tree —
+  external review requests (GitHub) + tickets assigned to me. Enter services a
+  review PR (`/review`) or descends into an assigned task.
+- **Ladder**: `p` → Portfolio (all epics w/ progress) → `enter` → Initiative
+  (an epic's tasks) → `enter` → Task (detail). `esc`/`h` walks back toward home.
+- **Lenses** (`[` / `]`), scoped to altitude: Portfolio = Roadmap / Sprint (my
+  open-sprint tasks across all initiatives); Initiative = Board / Mine.
+- **Actions at any altitude** on the focused item: `t`/`a`/`c` transition/
+  assign/comment, `A` claude (`/issue` on a task, project-dir on an epic,
+  `/review` on an inbox PR), `o` browser. `d` on an initiative runs the
+  two-stage decompose **gate** (scope → strategy, at your progress.json level).
+- Model principle: **the tree holds work you own; the Inbox holds work that
+  arrives at you.** A PR is a task's closing state, not a collection — reached
+  by navigating to its task (or, for external reviews, from the Inbox).
+
+**Cutover status:** this replaced the old 3-panel shell (see below). Known gaps
+not yet ported: full ticket editing (`e`/`d`/`T`/`p`/`l`/`m`), PR-detail/merge
+modal, Repos view, `E` editor, `/` filter, story-point chips, command palette,
+the Docs/research lens (`R`), and the background macOS notifier.
+
+## TUI dashboard structure (RETIRED — old 3-panel `ChDashboard`, no longer launched)
+
+The app **was** a **master + dual-detail** shell: the Projects panel (master) scoped two sibling detail panes — Kanban (tickets) and Code (PRs + repos). Both detail panes own tab strips for their own sub-views; the top chrome only shows project context. (Retained in `tui.py` for the modals/GradientPanel the workspace reuses; the `ChDashboard` App class itself is unreferenced.)
 
 - **Projects** are config-defined in `[[projects]]` blocks (TOML). Each has a `jql` filter + `repos` list + `local_path` + `repo_paths` (per-repo path overrides — solves cases where `<org>/<repo-slug>` doesn't map cleanly to your local clone dir name).
 - **Selecting a project** scopes the kanban JQL + PR list + repo list.
