@@ -153,6 +153,11 @@ class ZohoClient:
             "/tickets/search", {"_all": term, "limit": limit, "sortBy": "-modifiedTime"}
         )
 
+    async def search_by_assignee(self, agent_id: str, limit: int = 100) -> list[dict]:
+        return await self._data(
+            "/tickets/search", {"assigneeId": agent_id, "limit": limit, "sortBy": "-modifiedTime"}
+        )
+
     async def conversations(self, ticket_id: str) -> list[dict]:
         return await self._data(f"/tickets/{ticket_id}/conversations")
 
@@ -201,10 +206,15 @@ async def find_involved(client: ZohoClient, config: ZohoConfig) -> list[Involved
 
     # Candidate search: full email under _all (never the bare token — that pulls
     # in unrelated people who share a first name). Union + dedup by ticket id.
+    # Plus a direct assignee query so tickets assigned to me are caught even when
+    # my email doesn't appear in their searchable text.
     candidates: dict[str, dict] = {}
     for email in emails:
         for t in await client.search_tickets(email):
             candidates[str(t.get("id"))] = t
+    for agent_id in my_agent_ids:
+        for t in await client.search_by_assignee(agent_id):
+            candidates.setdefault(str(t.get("id")), t)
 
     involved: list[InvolvedTicket] = []
     for tid, t in candidates.items():

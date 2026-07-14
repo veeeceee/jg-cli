@@ -12,17 +12,21 @@ EMAILS = ["vibhu@charmhealthtech.com", "vibhu.c@medicalmine.com"]
 
 
 class FakeClient:
-    def __init__(self, agents, search, convs, comments):
+    def __init__(self, agents, search, convs, comments, by_assignee=None):
         self._agents = agents
         self._search = search
         self._convs = convs
         self._comments = comments
+        self._by_assignee = by_assignee or {}
 
     async def agents(self):
         return self._agents
 
     async def search_tickets(self, term, limit=100):
         return self._search.get(term, [])
+
+    async def search_by_assignee(self, agent_id, limit=100):
+        return self._by_assignee.get(agent_id, [])
 
     async def conversations(self, tid):
         return self._convs.get(tid, [])
@@ -38,13 +42,16 @@ def _mk_client():
     t2 = {"id": "2", "ticketNumber": "102", "subject": "assigned", "assigneeId": "A1", "status": "Open", "modifiedTime": "2026-07-03"}
     t3 = {"id": "3", "ticketNumber": "103", "subject": "mentioned", "assigneeId": "OTHER", "status": "Open", "modifiedTime": "2026-07-02"}
     t4 = {"id": "4", "ticketNumber": "104", "subject": "a different Vibhu entirely", "assigneeId": "OTHER", "status": "Open", "modifiedTime": "2026-07-01"}
+    # assigned to me but my email is NOT in any searchable text → only caught by
+    # the direct assignee query, not the _all email search.
+    t6 = {"id": "6", "ticketNumber": "106", "subject": "no email here", "assigneeId": "A1", "status": "Open", "modifiedTime": "2026-07-06"}
     search = {
         "vibhu@charmhealthtech.com": [t1, t5],
         "vibhu.c@medicalmine.com": [t2, t3, t4],
     }
     convs = {"1": [{"to": "vibhu@charmhealthtech.com", "cc": "", "fromEmailAddress": "x@y.com"}]}
     comments = {"3": [{"content": "please review zsu[@user:Z1]zsu thanks"}]}
-    return FakeClient(agents, search, convs, comments)
+    return FakeClient(agents, search, convs, comments, by_assignee={"A1": [t6]})
 
 
 @pytest.mark.asyncio
@@ -63,13 +70,14 @@ async def test_find_involved_classifies_and_drops_false_positives():
     by_id = {t.id: t.involvement for t in result}
 
     assert by_id["2"] == ["ASSIGNED"]          # assigneeId matches my agent
+    assert by_id["6"] == ["ASSIGNED"]          # caught only by the direct assignee query
     assert by_id["1"] == ["THREAD"]            # my email in a thread's to/cc
     assert by_id["3"] == ["MENTIONED"]         # my zuid in a comment's @mention
     assert by_id["5"] == ["BODY"]              # my exact email in the subject
     assert "4" not in by_id                    # fuzzy _all match, no real involvement → dropped
 
     # sorted newest-first by modifiedTime
-    assert [t.id for t in result] == ["1", "5", "2", "3"]
+    assert [t.id for t in result] == ["6", "1", "5", "2", "3"]
 
 
 @pytest.mark.asyncio
