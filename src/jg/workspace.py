@@ -29,6 +29,14 @@ from jg.render import GROUP_ORDER, GROUP_STYLE, normalize_status
 from jg.themes import ALL_THEMES
 from jg.tui import GradientPanel  # reuse the gradient-bordered panel
 
+# Lenses cut across the current altitude. Portfolio lenses span all initiatives
+# (Sprint = my open-sprint tasks everywhere); initiative lenses scope to the epic.
+LENSES: dict[str, list[str]] = {
+    "portfolio": ["Roadmap", "Sprint"],
+    "initiative": ["Board", "Mine"],
+    "task": [],
+}
+
 
 class _EpicRow(ListItem):
     def __init__(self, epic: roadmap.Epic):
@@ -59,6 +67,7 @@ class _TaskRow(ListItem):
 class WorkspaceApp(App):
     CSS = """
     #crumb { height: 1; padding: 0 1; color: $accent; text-style: bold; }
+    #lens { height: 1; padding: 0 1; }
     WorkspaceApp GradientPanel { height: 1fr; }
     WorkspaceApp ListView { background: transparent; }
     WorkspaceApp ListView > ListItem { background: transparent; padding: 0; }
@@ -74,6 +83,8 @@ class WorkspaceApp(App):
         Binding("escape", "ascend", "back", show=True),
         Binding("h", "ascend", "back", show=False),
         Binding("left", "ascend", "back", show=False),
+        Binding("right_square_bracket", "lens_next", "lens →", show=True),
+        Binding("left_square_bracket", "lens_prev", "lens ←", show=False),
         Binding("o", "open_browser", "browser", show=True),
     ]
 
@@ -83,12 +94,16 @@ class WorkspaceApp(App):
         self.altitude = "portfolio"  # portfolio | initiative | task
         self.current_epic: roadmap.Epic | None = None
         self.current_task: tuple[str, str] | None = None  # (key, summary)
+        self.lens = {"portfolio": "Roadmap", "initiative": "Board"}  # active lens per altitude
+        self._task_from = "initiative"  # altitude to return to when ascending from a task
         self._body: VerticalScroll | None = None
 
     def compose(self) -> ComposeResult:
         self._crumb = Static("", id="crumb")
+        self._lens_strip = Static("", id="lens")
         self._panel = GradientPanel(panel_title="workspace")
         yield self._crumb
+        yield self._lens_strip
         yield self._panel
         yield Footer()
 
@@ -116,6 +131,34 @@ class WorkspaceApp(App):
             parts.append(f"{self.current_task[0]} {self.current_task[1][:24]}")
         self._crumb.update(" › ".join(parts))  # noqa: RUF001 (breadcrumb separator)
 
+    def _set_lens_strip(self) -> None:
+        lenses = LENSES.get(self.altitude, [])
+        active = self.lens.get(self.altitude)
+        strip = Text()
+        for i, name in enumerate(lenses):
+            if i:
+                strip.append("    ")
+            strip.append(name, style="bold #c0caf5" if name == active else "dim")
+        self._lens_strip.update(strip)
+
+    def _task_rows(self, issues: list[dict]) -> list[_TaskRow]:
+        rank = {g: i for i, g in enumerate(GROUP_ORDER)}
+        rows = [
+            (i["key"], i.get("fields", {}).get("summary", ""), (i.get("fields", {}).get("status") or {}).get("name", "—"))
+            for i in issues
+        ]
+        rows.sort(key=lambda r: rank.get(normalize_status(r[2]), len(GROUP_ORDER)))
+        return [_TaskRow(k, s, st) for k, s, st in rows]
+
+    async def _search_rows(self, jql: str) -> list[_TaskRow] | str:
+        """Run a task search, returning rows or an error string."""
+        try:
+            async with JiraClient(self.config) as api:
+                data = await api.search_jql(jql, fields=["summary", "status"], max_results=100)
+        except Exception as e:
+            return self._notify_err(e)
+        return self._task_rows(data.get("issues", []))
+
     async def _swap(self, *widgets: Any, focus_list: bool = True) -> None:
         assert self._body is not None
         await self._body.remove_children()
@@ -133,12 +176,25 @@ class WorkspaceApp(App):
             return f"load failed: {e}"
         return f"load failed: {type(e).__name__}"
 
+    async def _show_rows(self, rows: list[_TaskRow] | str, empty_msg: str) -> None:
+        if isinstance(rows, str):  # error
+            await self._swap(Static(f"[red]{rows}[/]", classes="detail"), focus_list=False)
+        elif not rows:
+            await self._swap(Static(f"[dim]{empty_msg}[/]", classes="detail"), focus_list=False)
+        else:
+            await self._swap(ListView(*rows))
+
     # ── altitude 0: portfolio ─────────────────────────────────────────────────
     @work(exclusive=True)
     async def load_portfolio(self) -> None:
         self.altitude = "portfolio"
         self._set_crumb()
-        try:
+        self._set_lens_strip()
+        if self.lens["portfolio"] == "Sprint":  # my open-sprint tasks across all initiatives
+            jql = "assignee = currentUser() AND sprint in openSprints() ORDER BY status ASC, updated DESC"
+            await self._show_rows(await self._search_rows(jql), "no sprint tasks assigned to you")
+            return
+        try:  # Roadmap
             epics = await roadmap.fetch_roadmap(self.config)
         except Exception as e:
             await self._swap(Static(f"[red]{self._notify_err(e)}[/]", classes="detail"), focus_list=False)
@@ -154,24 +210,12 @@ class WorkspaceApp(App):
         assert self.current_epic is not None
         self.altitude = "initiative"
         self._set_crumb()
-        jql = f"parent = {self.current_epic.key} ORDER BY status ASC, updated DESC"
-        try:
-            async with JiraClient(self.config) as api:
-                data = await api.search_jql(jql, fields=["summary", "status"], max_results=100)
-        except Exception as e:
-            await self._swap(Static(f"[red]{self._notify_err(e)}[/]", classes="detail"), focus_list=False)
-            return
-        issues = data.get("issues", [])
-        if not issues:
-            await self._swap(Static("[dim]no child tasks[/]", classes="detail"), focus_list=False)
-            return
-        rank = {g: i for i, g in enumerate(GROUP_ORDER)}
-        rows = []
-        for iss in issues:
-            f = iss.get("fields", {})
-            rows.append((iss["key"], f.get("summary", ""), (f.get("status") or {}).get("name", "—")))
-        rows.sort(key=lambda r: rank.get(normalize_status(r[2]), len(GROUP_ORDER)))
-        await self._swap(ListView(*[_TaskRow(k, s, st) for k, s, st in rows]))
+        self._set_lens_strip()
+        base = f"parent = {self.current_epic.key}"
+        if self.lens["initiative"] == "Mine":
+            base += " AND assignee = currentUser()"
+        jql = base + " ORDER BY status ASC, updated DESC"
+        await self._show_rows(await self._search_rows(jql), "no tasks in this lens")
 
     # ── altitude 2: task ──────────────────────────────────────────────────────
     @work(exclusive=True)
@@ -180,6 +224,7 @@ class WorkspaceApp(App):
         key = self.current_task[0]
         self.altitude = "task"
         self._set_crumb()
+        self._set_lens_strip()
         try:
             async with JiraClient(self.config) as api:
                 issue = await api.get_issue(
@@ -220,6 +265,7 @@ class WorkspaceApp(App):
             self.load_initiative()
         elif isinstance(item, _TaskRow):
             self.current_task = (item.task_key, item.task_summary)
+            self._task_from = self.altitude  # portfolio (Sprint lens) or initiative
             self.load_task()
 
     @on(ListView.Selected)
@@ -233,7 +279,11 @@ class WorkspaceApp(App):
 
     def action_ascend(self) -> None:
         if self.altitude == "task":
-            self.load_initiative()
+            # return to wherever we descended from (initiative, or portfolio via Sprint lens)
+            if self._task_from == "portfolio":
+                self.load_portfolio()
+            else:
+                self.load_initiative()
         elif self.altitude == "initiative":
             self.load_portfolio()
         # portfolio is the top — no-op
@@ -242,6 +292,20 @@ class WorkspaceApp(App):
         {"portfolio": self.load_portfolio, "initiative": self.load_initiative, "task": self.load_task}[
             self.altitude
         ]()
+
+    def _cycle_lens(self, direction: int) -> None:
+        lenses = LENSES.get(self.altitude, [])
+        if not lenses:
+            return
+        cur = self.lens.get(self.altitude, lenses[0])
+        self.lens[self.altitude] = lenses[(lenses.index(cur) + direction) % len(lenses)]
+        self.action_refresh()
+
+    def action_lens_next(self) -> None:
+        self._cycle_lens(1)
+
+    def action_lens_prev(self) -> None:
+        self._cycle_lens(-1)
 
     def action_open_browser(self) -> None:
         import webbrowser
