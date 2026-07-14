@@ -21,14 +21,22 @@ from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.widgets import Footer, ListItem, ListView, Static
 
-from jg import github, roadmap
-from jg.adf import render_to_text
+from jg import gates, github, progress, projectdocs, roadmap
+from jg.adf import render_to_text, text_to_adf
 from jg.api import ApiError, JiraClient
 from jg.auth import AuthError
 from jg.config import Config
 from jg.render import GROUP_ORDER, GROUP_STYLE, normalize_status
 from jg.themes import ALL_THEMES
-from jg.tui import GradientPanel  # reuse the gradient-bordered panel
+from jg.tmux import quote_for_shell, spawn, spawn_in_dir
+from jg.tui import (  # reuse existing panel + action/gate modals
+    AssignModal,
+    CommentModal,
+    GateModal,
+    GradientPanel,
+    ScopeGateModal,
+    TransitionModal,
+)
 
 # Lenses cut across the current altitude. Portfolio lenses span all initiatives
 # (Sprint = my open-sprint tasks everywhere); initiative lenses scope to the epic.
@@ -111,6 +119,11 @@ class WorkspaceApp(App):
         Binding("left_square_bracket", "lens_prev", "lens ←", show=False),
         Binding("i", "inbox", "inbox", show=True),
         Binding("p", "portfolio", "portfolio", show=True),
+        Binding("t", "transition", "transition", show=True),
+        Binding("a", "assign", "assign", show=False),
+        Binding("c", "comment", "comment", show=False),
+        Binding("A", "claude", "claude", show=True),
+        Binding("d", "decompose", "decompose", show=True),
         Binding("o", "open_browser", "browser", show=True),
     ]
 
@@ -398,6 +411,177 @@ class WorkspaceApp(App):
         if key:
             webbrowser.open(f"{base}/browse/{key}")
             self.notify(f"opened {key}", severity="information")
+
+    # ── actions (work on the focused item at any altitude) ─────────────────────
+    def _focused_task_key(self) -> str | None:
+        if self.altitude == "task" and self.current_task:
+            return self.current_task[0]
+        item = self._highlighted()
+        return item.task_key if isinstance(item, _TaskRow) else None
+
+    def _project_dir_for_epic(self, key: str | None) -> str | None:
+        if not key:
+            return None
+        for p in self.config.projects:
+            if key in p.jql:
+                base = projectdocs.project_base(p)
+                if base and base.is_dir():
+                    return str(base)
+        return None
+
+    def _spawn(self, cmd: str, title: str, cwd: str | None = None) -> None:
+        try:
+            if cwd:
+                spawn_in_dir(cmd, cwd=cwd, title=title, config=self.config.tmux)
+            else:
+                spawn(cmd, title=title, config=self.config.tmux)
+        except RuntimeError as e:
+            self.notify(str(e), severity="error")
+            return
+        self.notify(f"opened {title}", severity="information")
+
+    def action_transition(self) -> None:
+        key = self._focused_task_key()
+        if not key:
+            self.notify("focus a task first", severity="warning")
+            return
+        self.run_worker(self._do_transition(key))
+
+    async def _do_transition(self, key: str) -> None:
+        try:
+            async with JiraClient(self.config) as api:
+                transitions = await api.get_transitions(key)
+        except Exception as e:
+            self.notify(self._notify_err(e), severity="error")
+            return
+        if not transitions:
+            self.notify("no transitions", severity="warning")
+            return
+
+        def _pick(tid: str | None) -> None:
+            if tid:
+                self.run_worker(self._apply_transition(key, tid))
+
+        self.app.push_screen(TransitionModal(transitions), _pick)
+
+    async def _apply_transition(self, key: str, tid: str) -> None:
+        try:
+            async with JiraClient(self.config) as api:
+                try:
+                    await api.transition_issue(key, tid)
+                except ApiError as e:
+                    if "resolution" in str(e).lower():
+                        await api.transition_issue(key, tid, resolution="Done")
+                    else:
+                        raise
+        except Exception as e:
+            self.notify(f"transition failed: {e}", severity="error")
+            return
+        self.notify("✓ transitioned", severity="information")
+        self.action_refresh()
+
+    def action_assign(self) -> None:
+        key = self._focused_task_key()
+        if not key:
+            self.notify("focus a task first", severity="warning")
+            return
+
+        def _pick(target: str | None) -> None:
+            if target:
+                self.run_worker(self._apply_assign(key, target))
+
+        self.app.push_screen(AssignModal(), _pick)
+
+    async def _apply_assign(self, key: str, target: str) -> None:
+        try:
+            async with JiraClient(self.config) as api:
+                if target.lower() in ("@me", "me"):
+                    me = await api.myself()
+                    await api.edit_issue(key, {"assignee": {"accountId": me["accountId"]}})
+                elif target.lower() in ("none", "unassign", "-"):
+                    await api.edit_issue(key, {"assignee": None})
+                else:
+                    results = await api.find_user(target.lstrip("@"))
+                    if not results:
+                        self.notify(f"no user matches '{target}'", severity="warning")
+                        return
+                    await api.edit_issue(key, {"assignee": {"accountId": results[0]["accountId"]}})
+        except Exception as e:
+            self.notify(f"assign failed: {e}", severity="error")
+            return
+        self.notify("✓ assigned", severity="information")
+        self.action_refresh()
+
+    def action_comment(self) -> None:
+        key = self._focused_task_key()
+        if not key:
+            self.notify("focus a task first", severity="warning")
+            return
+
+        def _submit(text: str | None) -> None:
+            if text:
+                self.run_worker(self._apply_comment(key, text))
+
+        self.app.push_screen(CommentModal(key), _submit)
+
+    async def _apply_comment(self, key: str, text: str) -> None:
+        try:
+            async with JiraClient(self.config) as api:
+                await api.add_comment(key, text_to_adf(text))
+        except Exception as e:
+            self.notify(f"comment failed: {e}", severity="error")
+            return
+        self.notify("✓ commented", severity="information")
+
+    def action_claude(self) -> None:
+        claude = self.config.ai.claude_path
+        key = self._focused_task_key()
+        if key:  # a task → run the configured ticket command (e.g. /issue CH-142)
+            self._spawn(f"{claude} {quote_for_shell(f'{self.config.ai.default_command} {key}')}", key)
+            return
+        item = self._highlighted()
+        if isinstance(item, _ReviewRow):  # external PR → /review
+            url = item.pr.get("url", "")
+            self._spawn(f"{claude} {quote_for_shell('/review ' + url)}", f"review·{item.pr.get('number', '')}")
+            return
+        # epic (initiative altitude or a highlighted epic) → claude scoped to its dir
+        ekey = item.epic.key if isinstance(item, _EpicRow) else (self.current_epic.key if self.current_epic else None)
+        if ekey:
+            self._spawn(claude, ekey, cwd=self._project_dir_for_epic(ekey))
+
+    def action_decompose(self) -> None:
+        if self.altitude != "initiative" or not self.current_epic:
+            self.notify("decompose works on an initiative (descend into an epic)", severity="warning")
+            return
+        e = self.current_epic
+        self.app.push_screen(ScopeGateModal(e.key, e.summary, e.total, e.done), self._decompose_after_scope)
+
+    def _decompose_after_scope(self, scope: str | None) -> None:
+        if not scope:
+            return
+        level = progress.read_level(gates.EPIC_DECOMPOSE.pattern)
+        self.app.push_screen(
+            GateModal(gates.EPIC_DECOMPOSE, level), lambda d: self._decompose_orchestrate(scope, d)
+        )
+
+    def _decompose_orchestrate(self, scope: str, decision: dict | None) -> None:
+        if not decision or self.current_epic is None:
+            return
+        e = self.current_epic
+        option = decision["option"] or gates.GateOption("(self-proposed)", "", "", "(watch your own stated risks)")
+        prompt = gates.build_decompose_prompt(option, e.key, e.summary, scope, decision["reasoning"])
+        cmd = f"{self.config.ai.claude_path} {quote_for_shell(prompt)}"
+        cwd = self._project_dir_for_epic(e.key)
+        try:
+            if cwd:
+                spawn_in_dir(cmd, cwd=cwd, title=f"decompose·{e.key}", config=self.config.tmux)
+            else:
+                spawn(cmd, title=f"decompose·{e.key}", config=self.config.tmux)
+        except RuntimeError as ex:
+            self.notify(str(ex), severity="error")
+            return
+        progress.record_use(gates.EPIC_DECOMPOSE.pattern)
+        self.notify(f"orchestrating {option.name} decomposition of {e.key}", severity="information")
 
 
 def run_workspace(config: Config) -> None:
