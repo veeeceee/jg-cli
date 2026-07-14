@@ -18,7 +18,7 @@ from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Footer, ListItem, ListView, Static
 
 from jg import gates, github, progress, projectdocs, roadmap
@@ -41,7 +41,7 @@ from jg.tui import (  # reuse existing panel + action/gate modals
 # Lenses cut across the current altitude. Portfolio lenses span all initiatives
 # (Sprint = my open-sprint tasks everywhere); initiative lenses scope to the epic.
 LENSES: dict[str, list[str]] = {
-    "inbox": [],
+    "home": [],
     "portfolio": ["Roadmap", "Sprint"],
     "initiative": ["Board", "Mine"],
     "task": [],
@@ -101,6 +101,8 @@ class WorkspaceApp(App):
     #crumb { height: 1; padding: 0 1; color: $accent; text-style: bold; }
     #lens { height: 1; padding: 0 1; }
     WorkspaceApp GradientPanel { height: 1fr; }
+    WorkspaceApp #home-row { height: 1fr; }
+    WorkspaceApp #home-row > GradientPanel { width: 1fr; height: 1fr; }
     WorkspaceApp ListView { background: transparent; }
     WorkspaceApp ListView > ListItem { background: transparent; padding: 0; }
     WorkspaceApp .detail { padding: 0 1; }
@@ -117,7 +119,7 @@ class WorkspaceApp(App):
         Binding("left", "ascend", "back", show=False),
         Binding("right_square_bracket", "lens_next", "lens →", show=True),
         Binding("left_square_bracket", "lens_prev", "lens ←", show=False),
-        Binding("i", "inbox", "inbox", show=True),
+        Binding("i", "home", "home", show=True),
         Binding("p", "portfolio", "portfolio", show=True),
         Binding("t", "transition", "transition", show=True),
         Binding("a", "assign", "assign", show=False),
@@ -136,6 +138,8 @@ class WorkspaceApp(App):
         self.lens = {"portfolio": "Roadmap", "initiative": "Board"}  # active lens per altitude
         self._task_from = "initiative"  # altitude to return to when ascending from a task
         self._body: VerticalScroll | None = None
+        self._left_list: ListView | None = None
+        self._right_list: ListView | None = None
 
     def compose(self) -> ComposeResult:
         self._crumb = Static("", id="crumb")
@@ -159,16 +163,16 @@ class WorkspaceApp(App):
             pass
         self._body = VerticalScroll()
         self._panel.mount_content(self._body)
-        self.load_inbox()  # cold-start at the front door
+        self.load_home()  # cold-start on the loop-at-a-glance home
 
     # ── breadcrumb ───────────────────────────────────────────────────────────
     def _set_crumb(self) -> None:
-        if self.altitude == "inbox":
-            self._crumb.update("Inbox")
+        if self.altitude == "home":
+            self._crumb.update("Home")
             return
-        # Root is Inbox for tasks opened from the inbox, else Portfolio (the tree).
-        if self.altitude == "task" and self._task_from == "inbox":
-            parts = ["Inbox"]
+        # Root is Home for tasks opened from the home panes, else Portfolio (the tree).
+        if self.altitude == "task" and self._task_from == "home":
+            parts = ["Home"]
         else:
             parts = ["Portfolio"]
             if self.altitude in ("initiative", "task") and self.current_epic:
@@ -230,25 +234,38 @@ class WorkspaceApp(App):
         else:
             await self._swap(ListView(*rows))
 
-    # ── home: inbox (front door — inbound work with no home in the tree) ───────
+    # ── home: the loop at a glance — In flight (Execute/Close) | Inbox (Intake) ─
     @work(exclusive=True)
-    async def load_inbox(self) -> None:
-        self.altitude = "inbox"
+    async def load_home(self) -> None:
+        self.altitude = "home"
         self._set_crumb()
         self._set_lens_strip()
+        # Left = my in-progress work (Execute/Close). Right = inbound (Intake).
+        inflight = await self._search_rows(
+            'assignee = currentUser() AND statusCategory = "In Progress" ORDER BY updated DESC'
+        )
         try:  # GitHub call is sync (subprocess) — offload so the UI stays responsive
             prs = await asyncio.to_thread(github.review_requested_prs)
         except Exception:
             prs = []
-        assigned = await self._search_rows(
-            "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
+        todo = await self._search_rows(
+            'assignee = currentUser() AND statusCategory = "To Do" ORDER BY updated DESC'
         )
-        assigned_rows = assigned if isinstance(assigned, list) else []
-        items: list[ListItem] = [_HeaderRow(f"Review requests ({len(prs)})")]
-        items += [_ReviewRow(pr) for pr in prs]
-        items.append(_HeaderRow(f"Assigned to me ({len(assigned_rows)})"))
-        items += assigned_rows
-        await self._swap(ListView(*items))
+        left_rows = inflight if isinstance(inflight, list) else []
+        todo_rows = todo if isinstance(todo, list) else []
+        right_items: list[ListItem] = [_HeaderRow(f"Review requests ({len(prs)})")]
+        right_items += [_ReviewRow(pr) for pr in prs]
+        right_items.append(_HeaderRow(f"New / assigned ({len(todo_rows)})"))
+        right_items += todo_rows
+
+        self._left_list = ListView(*left_rows)
+        self._right_list = ListView(*right_items)
+        left = GradientPanel(self._left_list, panel_title=f"In flight — my work ({len(left_rows)})")
+        right = GradientPanel(self._right_list, panel_title="Inbox — arriving")
+        assert self._body is not None
+        await self._body.remove_children()
+        await self._body.mount(Horizontal(left, right, id="home-row"))
+        self._left_list.focus()
 
     # ── altitude 0: portfolio ─────────────────────────────────────────────────
     @work(exclusive=True)
@@ -353,26 +370,26 @@ class WorkspaceApp(App):
         self._descend_from(self._highlighted())
 
     def action_ascend(self) -> None:
-        # esc always walks back toward home (inbox).
+        # esc always walks back toward home.
         if self.altitude == "task":
-            {"inbox": self.load_inbox, "portfolio": self.load_portfolio}.get(
+            {"home": self.load_home, "portfolio": self.load_portfolio}.get(
                 self._task_from, self.load_initiative
             )()
         elif self.altitude == "initiative":
             self.load_portfolio()
         elif self.altitude == "portfolio":
-            self.load_inbox()
-        # inbox is home — no-op
+            self.load_home()
+        # home is the root — no-op
 
-    def action_inbox(self) -> None:
-        self.load_inbox()
+    def action_home(self) -> None:
+        self.load_home()
 
     def action_portfolio(self) -> None:
         self.load_portfolio()
 
     def action_refresh(self) -> None:
         {
-            "inbox": self.load_inbox,
+            "home": self.load_home,
             "portfolio": self.load_portfolio,
             "initiative": self.load_initiative,
             "task": self.load_task,
