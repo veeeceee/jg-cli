@@ -11,6 +11,7 @@ three altitudes. Lenses, inbox, actions, and gate wiring land in later slices.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from rich.text import Text
@@ -20,7 +21,7 @@ from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.widgets import Footer, ListItem, ListView, Static
 
-from jg import roadmap
+from jg import github, roadmap
 from jg.adf import render_to_text
 from jg.api import ApiError, JiraClient
 from jg.auth import AuthError
@@ -32,6 +33,7 @@ from jg.tui import GradientPanel  # reuse the gradient-bordered panel
 # Lenses cut across the current altitude. Portfolio lenses span all initiatives
 # (Sprint = my open-sprint tasks everywhere); initiative lenses scope to the epic.
 LENSES: dict[str, list[str]] = {
+    "inbox": [],
     "portfolio": ["Roadmap", "Sprint"],
     "initiative": ["Board", "Mine"],
     "task": [],
@@ -64,6 +66,28 @@ class _TaskRow(ListItem):
         super().__init__(Static(t))
 
 
+class _ReviewRow(ListItem):
+    """An external PR awaiting my review — inbound work with no home in my tree."""
+
+    def __init__(self, pr: dict):
+        self.pr = pr
+        repo = (pr.get("repository") or {}).get("nameWithOwner", "?")
+        num = pr.get("number", "?")
+        t = Text()
+        t.append("⇄ ", style="magenta")
+        t.append(f"{repo}#{num}  ", style="bold #c0caf5")
+        t.append((pr.get("title") or "")[:56], style="white")
+        super().__init__(Static(t))
+
+
+class _HeaderRow(ListItem):
+    """A non-actionable section header inside a list (skipped on descend)."""
+
+    def __init__(self, label: str):
+        super().__init__(Static(Text(label, style="bold #f5c2e7")))
+        self.disabled = True
+
+
 class WorkspaceApp(App):
     CSS = """
     #crumb { height: 1; padding: 0 1; color: $accent; text-style: bold; }
@@ -85,6 +109,8 @@ class WorkspaceApp(App):
         Binding("left", "ascend", "back", show=False),
         Binding("right_square_bracket", "lens_next", "lens →", show=True),
         Binding("left_square_bracket", "lens_prev", "lens ←", show=False),
+        Binding("i", "inbox", "inbox", show=True),
+        Binding("p", "portfolio", "portfolio", show=True),
         Binding("o", "open_browser", "browser", show=True),
     ]
 
@@ -120,13 +146,20 @@ class WorkspaceApp(App):
             pass
         self._body = VerticalScroll()
         self._panel.mount_content(self._body)
-        self.load_portfolio()
+        self.load_inbox()  # cold-start at the front door
 
     # ── breadcrumb ───────────────────────────────────────────────────────────
     def _set_crumb(self) -> None:
-        parts = ["Portfolio"]
-        if self.altitude in ("initiative", "task") and self.current_epic:
-            parts.append(f"{self.current_epic.key} {self.current_epic.summary[:24]}")
+        if self.altitude == "inbox":
+            self._crumb.update("Inbox")
+            return
+        # Root is Inbox for tasks opened from the inbox, else Portfolio (the tree).
+        if self.altitude == "task" and self._task_from == "inbox":
+            parts = ["Inbox"]
+        else:
+            parts = ["Portfolio"]
+            if self.altitude in ("initiative", "task") and self.current_epic:
+                parts.append(f"{self.current_epic.key} {self.current_epic.summary[:24]}")
         if self.altitude == "task" and self.current_task:
             parts.append(f"{self.current_task[0]} {self.current_task[1][:24]}")
         self._crumb.update(" › ".join(parts))  # noqa: RUF001 (breadcrumb separator)
@@ -183,6 +216,26 @@ class WorkspaceApp(App):
             await self._swap(Static(f"[dim]{empty_msg}[/]", classes="detail"), focus_list=False)
         else:
             await self._swap(ListView(*rows))
+
+    # ── home: inbox (front door — inbound work with no home in the tree) ───────
+    @work(exclusive=True)
+    async def load_inbox(self) -> None:
+        self.altitude = "inbox"
+        self._set_crumb()
+        self._set_lens_strip()
+        try:  # GitHub call is sync (subprocess) — offload so the UI stays responsive
+            prs = await asyncio.to_thread(github.review_requested_prs)
+        except Exception:
+            prs = []
+        assigned = await self._search_rows(
+            "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
+        )
+        assigned_rows = assigned if isinstance(assigned, list) else []
+        items: list[ListItem] = [_HeaderRow(f"Review requests ({len(prs)})")]
+        items += [_ReviewRow(pr) for pr in prs]
+        items.append(_HeaderRow(f"Assigned to me ({len(assigned_rows)})"))
+        items += assigned_rows
+        await self._swap(ListView(*items))
 
     # ── altitude 0: portfolio ─────────────────────────────────────────────────
     @work(exclusive=True)
@@ -263,10 +316,19 @@ class WorkspaceApp(App):
         if isinstance(item, _EpicRow):
             self.current_epic = item.epic
             self.load_initiative()
+        elif isinstance(item, _ReviewRow):
+            # external PR — service and dismiss; never joins the tree
+            url = item.pr.get("url")
+            if url:
+                import webbrowser
+
+                webbrowser.open(url)
+                self.notify(f"opened review {item.pr.get('number', '')}", severity="information")
         elif isinstance(item, _TaskRow):
             self.current_task = (item.task_key, item.task_summary)
-            self._task_from = self.altitude  # portfolio (Sprint lens) or initiative
+            self._task_from = self.altitude  # inbox, portfolio (Sprint lens), or initiative
             self.load_task()
+        # _HeaderRow → ignored
 
     @on(ListView.Selected)
     def _on_selected(self, ev: ListView.Selected) -> None:
@@ -278,20 +340,30 @@ class WorkspaceApp(App):
         self._descend_from(self._highlighted())
 
     def action_ascend(self) -> None:
+        # esc always walks back toward home (inbox).
         if self.altitude == "task":
-            # return to wherever we descended from (initiative, or portfolio via Sprint lens)
-            if self._task_from == "portfolio":
-                self.load_portfolio()
-            else:
-                self.load_initiative()
+            {"inbox": self.load_inbox, "portfolio": self.load_portfolio}.get(
+                self._task_from, self.load_initiative
+            )()
         elif self.altitude == "initiative":
             self.load_portfolio()
-        # portfolio is the top — no-op
+        elif self.altitude == "portfolio":
+            self.load_inbox()
+        # inbox is home — no-op
+
+    def action_inbox(self) -> None:
+        self.load_inbox()
+
+    def action_portfolio(self) -> None:
+        self.load_portfolio()
 
     def action_refresh(self) -> None:
-        {"portfolio": self.load_portfolio, "initiative": self.load_initiative, "task": self.load_task}[
-            self.altitude
-        ]()
+        {
+            "inbox": self.load_inbox,
+            "portfolio": self.load_portfolio,
+            "initiative": self.load_initiative,
+            "task": self.load_task,
+        }[self.altitude]()
 
     def _cycle_lens(self, direction: int) -> None:
         lenses = LENSES.get(self.altitude, [])
