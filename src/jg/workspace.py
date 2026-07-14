@@ -29,6 +29,7 @@ from jg.adf import render_to_text, text_to_adf
 from jg.api import ApiError, JiraClient
 from jg.auth import AuthError
 from jg.config import Config
+from jg.notifier import notify as macos_notify
 from jg.render import GROUP_ORDER, GROUP_STYLE, normalize_status
 from jg.themes import ALL_THEMES
 from jg.tmux import quote_for_shell, spawn, spawn_in_dir
@@ -162,6 +163,11 @@ class WorkspaceApp(App):
         self._master_list: ListView | None = None
         self._detail: VerticalScroll | None = None
         self._detail_cache: dict[str, dict] = {}
+        self._notify_reviews: set[str] = set()       # snapshot: review-request ids
+        self._notify_assigned: dict[str, str] = {}    # snapshot: my ticket key -> status
+        self._notify_baselined = False                # first poll seeds snapshots silently
+
+    NOTIFY_INTERVAL = 120  # seconds; background diff → macOS notifications
 
     def compose(self) -> ComposeResult:
         self._crumb = Static("", id="crumb")
@@ -186,6 +192,9 @@ class WorkspaceApp(App):
         self._body = VerticalScroll()
         self._panel.mount_content(self._body)
         self.load_home()  # cold-start on the loop-at-a-glance home
+        if self.config.ui.notifications:
+            self._poll_notify()  # baseline snapshot now
+            self.set_interval(self.NOTIFY_INTERVAL, self._poll_notify)  # then diff on each tick
 
     # ── breadcrumb ───────────────────────────────────────────────────────────
     def _set_crumb(self) -> None:
@@ -856,6 +865,48 @@ class WorkspaceApp(App):
             self.notify("unchanged", severity="information")
             return
         await self._apply_edit(key, {jira_field: text_to_adf(new) if new else None}, f"{jira_field} updated")
+
+
+    # ── background notifier (diff → macOS alerts) ──────────────────────────────
+    @work(exclusive=True, group="notify")
+    async def _poll_notify(self) -> None:
+        # Incoming review requests (GitHub).
+        try:
+            prs = await asyncio.to_thread(github.review_requested_prs)
+        except Exception:
+            prs = []
+        review_ids = {
+            f"{(p.get('repository') or {}).get('nameWithOwner', '?')}#{p.get('number', '?')}" for p in prs
+        }
+
+        # My assigned tickets: new assignments + status changes.
+        try:
+            async with JiraClient(self.config) as api:
+                data = await api.search_jql(
+                    "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC",
+                    fields=["summary", "status"],
+                    max_results=100,
+                )
+        except Exception:
+            return  # keep the prior baseline; retry next tick
+        cur = {
+            i["key"]: ((i.get("fields") or {}).get("status") or {}).get("name", "")
+            for i in data.get("issues", [])
+        }
+
+        # Diff against the snapshot — but only once a baseline exists (an empty
+        # baseline is real, so use an explicit flag, not truthiness).
+        if self._notify_baselined:
+            for r in sorted(review_ids - self._notify_reviews):
+                macos_notify("Review requested", r)
+            for key, status in cur.items():
+                if key not in self._notify_assigned:
+                    macos_notify("New assignment", key)
+                elif self._notify_assigned[key] != status:
+                    macos_notify("Status changed", f"{key}: {self._notify_assigned[key]} → {status}")
+        self._notify_reviews = review_ids
+        self._notify_assigned = cur
+        self._notify_baselined = True
 
 
 def run_workspace(config: Config) -> None:
