@@ -428,6 +428,9 @@ class ZohoRow(ListItem):
     def __init__(self, ticket: zoho.InvolvedTicket):
         self.web_url = ticket.web_url
         self.ticket_number = ticket.ticket_number
+        self.zoho_id = ticket.id
+        self.subject = ticket.subject
+        self.jira_keys = ticket.jira_keys
         line = Text()
         line.append("⛑ ", style="orange3")
         line.append(f"#{ticket.ticket_number}  ", style="bold #c0caf5")
@@ -2635,6 +2638,95 @@ class GateModal(ModalScreen["dict | None"]):
         self.dismiss({"option": self._chosen, "reasoning": reasoning})
 
 
+class EscalateModal(ModalScreen["dict | None"]):
+    """Escalate a Zoho support ticket into a Jira task. Pick the target epic
+    (enter) then state the dev ask (enter) — jg then spawns Claude to author the
+    Jira task and link both systems. jg stays read-only; Claude does the
+    cross-system writes via its Jira + Zoho MCPs."""
+
+    DEFAULT_CSS = """
+    EscalateModal { align: center middle; background: #000000 97%; }
+    EscalateModal GradientPanel { background: #1c1c1e; width: 84%; height: 80%; }
+    EscalateModal #esc-head { height: auto; margin: 0 0 1 0; }
+    EscalateModal #esc-ask { margin: 1 0 0 0; }
+    EscalateModal #footer { color: $text-muted; }
+    EscalateModal ListView { background: transparent; height: 1fr; }
+    EscalateModal ListView > ListItem { background: transparent; padding: 0; }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "cancel", show=False)]  # noqa: RUF012
+
+    def __init__(self, config: Config, zoho_number: str, zoho_subject: str, zoho_id: str, zoho_url: str):
+        super().__init__()
+        self.config = config
+        self.zoho_number = zoho_number
+        self.zoho_subject = zoho_subject
+        self.zoho_id = zoho_id
+        self.zoho_url = zoho_url
+        self._epics: ListView | None = None
+        self._ask: Input | None = None
+        self._chosen: _EpicItem | None = None
+
+    def compose(self) -> ComposeResult:
+        yield GradientPanel(panel_title=f"escalate Zoho #{self.zoho_number} → Jira")
+
+    async def on_mount(self) -> None:
+        head = Text()
+        head.append("support ticket  ", style="bold #c0caf5")
+        head.append(f"#{self.zoho_number}  {self.zoho_subject[:60]}", style="white")
+        head.append("\n\nPick the target epic (enter), then describe the dev ask.", style="dim")
+        self._epics = ListView()
+        self._ask = Input(placeholder="what needs to be built/fixed? (the dev ask)", id="esc-ask")
+        self.query_one(GradientPanel).mount_content(
+            Static(head, id="esc-head"),
+            self._epics,
+            self._ask,
+            Static("[dim]enter on an epic → then type the ask → enter to escalate · esc cancel[/]", id="footer", markup=True),
+        )
+        self.run_worker(self._load_epics())
+
+    async def _load_epics(self) -> None:
+        try:
+            epics = await roadmap.fetch_roadmap(self.config)
+        except Exception as e:
+            self.notify(f"couldn't load epics: {type(e).__name__}", severity="error")
+            return
+        if self._epics is None:
+            return
+        await self._epics.clear()
+        for e in epics:
+            await self._epics.append(_EpicItem(e, self.config.default_cloud_url))
+        if len(self._epics.children):
+            self._epics.index = 0
+        self._epics.focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(ListView.Selected)
+    def _pick_epic(self, ev: ListView.Selected) -> None:
+        if isinstance(ev.item, _EpicItem):
+            self._chosen = ev.item
+            self.notify(f"target: {self._chosen.epic_key} — now type the dev ask", timeout=3)
+            if self._ask is not None:
+                self._ask.focus()
+
+    @on(Input.Submitted)
+    def _commit(self, ev: Input.Submitted) -> None:
+        if self._chosen is None:
+            item = self._epics.highlighted_child if self._epics else None
+            if isinstance(item, _EpicItem):
+                self._chosen = item
+        if self._chosen is None:
+            self.notify("pick an epic first", severity="warning")
+            return
+        ask = ev.value.strip()
+        if not ask:
+            self.notify("describe the dev ask", severity="warning")
+            return
+        self.dismiss({"epic_key": self._chosen.epic_key, "epic_summary": self._chosen.epic_summary, "ask": ask})
+
+
 class RoadmapModal(ModalScreen[None]):
     """Portfolio altitude — every epic with child progress, active work on top.
     Read-only; enter/o opens the highlighted epic in the browser."""
@@ -3204,6 +3296,7 @@ class ChDashboard(App):
         Binding("B", "brainstorm", "brainstorm", show=True),
         Binding("p", "project_overview", "project", show=True),
         Binding("g", "roadmap", "roadmap", show=True),
+        Binding("J", "escalate", "escalate→jira", show=False),
         Binding("enter", "open_detail", "open", show=True),
         Binding("o", "open_browser", "browser", show=True),
         Binding("slash", "focus_filter", "filter", show=True),
@@ -4246,6 +4339,48 @@ class ChDashboard(App):
 
         webbrowser.open(row.web_url)
         self.notify(f"opened Zoho #{row.ticket_number}", severity="information")
+
+    def action_escalate(self) -> None:
+        """Escalate the focused Zoho support ticket into a Jira task (gated)."""
+        focused = self.focused
+        row = focused.highlighted_child if isinstance(focused, ListView) else None
+        if not isinstance(row, ZohoRow):
+            self.notify("focus a Zoho support ticket (Inbox tab) to escalate", severity="warning")
+            return
+        if row.jira_keys:
+            self.notify(f"already linked to {', '.join(row.jira_keys)}", severity="information")
+            return
+        self.push_screen(
+            EscalateModal(self.config, row.ticket_number, row.subject, row.zoho_id, row.web_url),
+            lambda d: self._do_escalate(row, d),
+        )
+
+    def _do_escalate(self, row: ZohoRow, decision: dict | None) -> None:
+        if not decision:
+            return  # cancelled
+        prompt = (
+            f'Escalate Zoho Desk support ticket #{row.ticket_number} into a Jira task.\n'
+            f'Zoho ticket: "{row.subject}" (id {row.zoho_id}) — {row.web_url}\n'
+            f'Target epic: {decision["epic_key"]} "{decision["epic_summary"]}"\n'
+            f'Dev ask: {decision["ask"]}\n\n'
+            f"Do this:\n"
+            f"1. Read the Zoho ticket for full context — Zoho Desk MCP: fetch the ticket + "
+            f"conversations/comments for id {row.zoho_id} (orgId {self.config.zoho.org_id}).\n"
+            f"2. Create a Jira task under {decision['epic_key']} (Jira MCP or `jg create`): a clear "
+            f"summary + a description capturing the support context and the dev ask. Show me the "
+            f"proposed task and get my confirmation before creating.\n"
+            f"3. After creating, write the new Jira key into the Zoho ticket's 'Associated Jira Issue "
+            f"Keys' custom field (Zoho Desk MCP updateTicket, id {row.zoho_id}).\n"
+            f"4. Add a back-reference on the Jira side — a remote link to {row.web_url}.\n"
+            f"Report the created key and confirm both links are set."
+        )
+        cmd = f"{self.config.ai.claude_path} {quote_for_shell(prompt)}"
+        try:
+            spawn(cmd, title=f"escalate·#{row.ticket_number}", config=self.config.tmux)
+        except RuntimeError as e:
+            self.notify(str(e), severity="error")
+            return
+        self.notify(f"escalating #{row.ticket_number} → {decision['epic_key']}", severity="information")
 
     def _highlighted_project(self) -> Project | None:
         """The real project highlighted in a focused ProjectList, if any."""
