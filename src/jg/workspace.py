@@ -19,7 +19,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
-from textual.widgets import Footer, ListItem, ListView, Static
+from textual.widgets import Footer, ListItem, ListView, Markdown, Static
 
 from jg import gates, github, progress, projectdocs, roadmap
 from jg.adf import render_to_text, text_to_adf
@@ -42,6 +42,7 @@ from jg.tui import (  # reuse existing panel + action/gate modals
 # (Sprint = my open-sprint tasks everywhere); initiative lenses scope to the epic.
 LENSES: dict[str, list[str]] = {
     "home": [],
+    "inbox": [],
     "portfolio": ["Roadmap", "Sprint"],
     "initiative": ["Board", "Mine"],
     "task": [],
@@ -103,6 +104,13 @@ class WorkspaceApp(App):
     WorkspaceApp GradientPanel { height: 1fr; }
     WorkspaceApp #home-row { height: 1fr; }
     WorkspaceApp #home-row > GradientPanel { width: 1fr; height: 1fr; }
+    WorkspaceApp .ws-detail { padding: 0 1; height: auto; }
+    WorkspaceApp .ws-meta { color: $text-muted; height: auto; margin: 0 0 1 0; }
+    WorkspaceApp Markdown { margin: 0; padding: 0; }
+    WorkspaceApp MarkdownH1 { background: $accent; color: white; text-style: bold; padding: 0 1; margin: 1 0 0 0; }
+    WorkspaceApp MarkdownH2 { color: $accent; text-style: bold; border-left: thick $accent; padding: 0 0 0 1; margin: 1 0 0 0; }
+    WorkspaceApp MarkdownH3 { color: $accent; text-style: bold; margin: 1 0 0 0; }
+    WorkspaceApp MarkdownFence, WorkspaceApp MarkdownCode { background: $boost 20%; color: $accent; }
     WorkspaceApp ListView { background: transparent; }
     WorkspaceApp ListView > ListItem { background: transparent; padding: 0; }
     WorkspaceApp .detail { padding: 0 1; }
@@ -119,7 +127,7 @@ class WorkspaceApp(App):
         Binding("left", "ascend", "back", show=False),
         Binding("right_square_bracket", "lens_next", "lens →", show=True),
         Binding("left_square_bracket", "lens_prev", "lens ←", show=False),
-        Binding("i", "home", "home", show=True),
+        Binding("i", "inbox", "inbox", show=True),
         Binding("p", "portfolio", "portfolio", show=True),
         Binding("t", "transition", "transition", show=True),
         Binding("a", "assign", "assign", show=False),
@@ -138,8 +146,9 @@ class WorkspaceApp(App):
         self.lens = {"portfolio": "Roadmap", "initiative": "Board"}  # active lens per altitude
         self._task_from = "initiative"  # altitude to return to when ascending from a task
         self._body: VerticalScroll | None = None
-        self._left_list: ListView | None = None
-        self._right_list: ListView | None = None
+        self._master_list: ListView | None = None
+        self._detail: VerticalScroll | None = None
+        self._detail_cache: dict[str, dict] = {}
 
     def compose(self) -> ComposeResult:
         self._crumb = Static("", id="crumb")
@@ -170,9 +179,12 @@ class WorkspaceApp(App):
         if self.altitude == "home":
             self._crumb.update("Home")
             return
-        # Root is Home for tasks opened from the home panes, else Portfolio (the tree).
-        if self.altitude == "task" and self._task_from == "home":
-            parts = ["Home"]
+        if self.altitude == "inbox":
+            self._crumb.update("Inbox")
+            return
+        # Root is Home/Inbox for tasks opened from those, else Portfolio (the tree).
+        if self.altitude == "task" and self._task_from in ("home", "inbox"):
+            parts = [self._task_from.capitalize()]
         else:
             parts = ["Portfolio"]
             if self.altitude in ("initiative", "task") and self.current_epic:
@@ -234,38 +246,99 @@ class WorkspaceApp(App):
         else:
             await self._swap(ListView(*rows))
 
-    # ── home: the loop at a glance — In flight (Execute/Close) | Inbox (Intake) ─
+    # ── home: master-detail — "my work" list (master) + rich detail pane ───────
     @work(exclusive=True)
     async def load_home(self) -> None:
         self.altitude = "home"
         self._set_crumb()
         self._set_lens_strip()
-        # Left = my in-progress work (Execute/Close). Right = inbound (Intake).
         inflight = await self._search_rows(
             'assignee = currentUser() AND statusCategory = "In Progress" ORDER BY updated DESC'
         )
+        todo = await self._search_rows(
+            'assignee = currentUser() AND statusCategory = "To Do" ORDER BY updated DESC'
+        )
+        inflight_rows = inflight if isinstance(inflight, list) else []
+        todo_rows = todo if isinstance(todo, list) else []
+        items: list[ListItem] = [_HeaderRow(f"In flight ({len(inflight_rows)})")]
+        items += inflight_rows
+        items.append(_HeaderRow(f"To do ({len(todo_rows)})"))
+        items += todo_rows
+
+        self._master_list = ListView(*items)
+        self._detail = VerticalScroll(classes="ws-detail")
+        left = GradientPanel(self._master_list, panel_title="My work")
+        right = GradientPanel(self._detail, panel_title="Detail")
+        assert self._body is not None
+        await self._body.remove_children()
+        await self._body.mount(Horizontal(left, right, id="home-row"))
+        self._master_list.focus()
+        first = next((r for r in items if isinstance(r, _TaskRow)), None)
+        if first is not None:
+            self._show_detail(first.task_key)
+
+    # ── inbox: inbound work with no home in the tree (reachable via `i`) ────────
+    @work(exclusive=True)
+    async def load_inbox(self) -> None:
+        self.altitude = "inbox"
+        self._set_crumb()
+        self._set_lens_strip()
         try:  # GitHub call is sync (subprocess) — offload so the UI stays responsive
             prs = await asyncio.to_thread(github.review_requested_prs)
         except Exception:
             prs = []
-        todo = await self._search_rows(
-            'assignee = currentUser() AND statusCategory = "To Do" ORDER BY updated DESC'
-        )
-        left_rows = inflight if isinstance(inflight, list) else []
-        todo_rows = todo if isinstance(todo, list) else []
-        right_items: list[ListItem] = [_HeaderRow(f"Review requests ({len(prs)})")]
-        right_items += [_ReviewRow(pr) for pr in prs]
-        right_items.append(_HeaderRow(f"New / assigned ({len(todo_rows)})"))
-        right_items += todo_rows
+        items: list[ListItem] = [_HeaderRow(f"Review requests ({len(prs)})")]
+        items += [_ReviewRow(pr) for pr in prs]
+        if not prs:
+            items.append(_HeaderRow("(nothing inbound)"))
+        await self._swap(ListView(*items))
 
-        self._left_list = ListView(*left_rows)
-        self._right_list = ListView(*right_items)
-        left = GradientPanel(self._left_list, panel_title=f"In flight — my work ({len(left_rows)})")
-        right = GradientPanel(self._right_list, panel_title="Inbox — arriving")
-        assert self._body is not None
-        await self._body.remove_children()
-        await self._body.mount(Horizontal(left, right, id="home-row"))
-        self._left_list.focus()
+    # ── detail pane (updated as the master-list cursor moves) ──────────────────
+    @work(exclusive=True, group="detail")
+    async def _show_detail(self, key: str) -> None:
+        if self.altitude != "home" or self._detail is None:
+            return
+        issue = self._detail_cache.get(key)
+        if issue is None:
+            await self._detail.remove_children()
+            await self._detail.mount(Static("[dim]loading…[/]", markup=True))
+            try:
+                async with JiraClient(self.config) as api:
+                    issue = await api.get_issue(
+                        key, fields=["summary", "status", "priority", "issuetype", "assignee", "description"]
+                    )
+            except Exception as e:
+                if self._detail is not None:
+                    await self._detail.remove_children()
+                    await self._detail.mount(Static(f"[red]{self._notify_err(e)}[/]", markup=True))
+                return
+            self._detail_cache[key] = issue
+        await self._render_detail(issue)
+
+    async def _render_detail(self, issue: dict) -> None:
+        if self._detail is None:
+            return
+        f = issue.get("fields", {})
+        status = (f.get("status") or {}).get("name", "—")
+        title = Text()
+        title.append(issue.get("key", ""), style="bold #c0caf5")
+        title.append("  ")
+        title.append(f.get("summary", ""), style="bold")
+        meta = Text()
+        meta.append(f"[● {status}]", style=GROUP_STYLE.get(normalize_status(status), "white") + " bold")
+        meta.append("  ")
+        meta.append((f.get("issuetype") or {}).get("name", ""), style="white")
+        meta.append("  ·  ", style="dim")
+        meta.append((f.get("priority") or {}).get("name", "—"), style="white")
+        meta.append("  ·  @", style="dim")
+        meta.append((f.get("assignee") or {}).get("displayName", "unassigned"), style="white")
+        desc_md = render_to_text(f.get("description"))
+        await self._detail.remove_children()
+        await self._detail.mount(Static(title), Static(meta, classes="ws-meta"))
+        if desc_md.strip():
+            await self._detail.mount(Markdown(desc_md))
+        else:
+            await self._detail.mount(Static("[dim](no description)[/]", markup=True))
 
     # ── altitude 0: portfolio ─────────────────────────────────────────────────
     @work(exclusive=True)
@@ -326,12 +399,16 @@ class WorkspaceApp(App):
         head.append((f.get("priority") or {}).get("name", "—"), style="white")
         head.append("  ·  @", style="dim")
         head.append((f.get("assignee") or {}).get("displayName", "unassigned"), style="white")
-        desc = f.get("description")
-        body_text = render_to_text(desc) if desc else "(no description)"
-        lines = body_text.splitlines()[:24]
+        title = Text()
+        title.append(key, style="bold #c0caf5")
+        title.append("  ")
+        title.append(f.get("summary", ""), style="bold")
+        desc_md = render_to_text(f.get("description"))
+        body = Markdown(desc_md) if desc_md.strip() else Static("[dim](no description)[/]", markup=True)
         await self._swap(
-            Static(head, classes="detail"),
-            Static("\n".join(lines) or "(no description)", classes="detail"),
+            Static(title, classes="detail"),
+            Static(head, classes="detail ws-meta"),
+            body,
             focus_list=False,
         )
 
@@ -365,6 +442,12 @@ class WorkspaceApp(App):
         # enter on a row is consumed by the ListView as Selected, so descend here.
         self._descend_from(ev.item)
 
+    @on(ListView.Highlighted)
+    def _on_highlighted(self, ev: ListView.Highlighted) -> None:
+        # master-detail: moving the cursor in the home list refreshes the detail pane.
+        if self.altitude == "home" and isinstance(ev.item, _TaskRow):
+            self._show_detail(ev.item.task_key)
+
     def action_descend(self) -> None:
         # l / → path (when a non-list altitude is focused, or as an alias).
         self._descend_from(self._highlighted())
@@ -372,17 +455,17 @@ class WorkspaceApp(App):
     def action_ascend(self) -> None:
         # esc always walks back toward home.
         if self.altitude == "task":
-            {"home": self.load_home, "portfolio": self.load_portfolio}.get(
+            {"home": self.load_home, "inbox": self.load_inbox, "portfolio": self.load_portfolio}.get(
                 self._task_from, self.load_initiative
             )()
         elif self.altitude == "initiative":
             self.load_portfolio()
-        elif self.altitude == "portfolio":
+        elif self.altitude in ("portfolio", "inbox"):
             self.load_home()
         # home is the root — no-op
 
-    def action_home(self) -> None:
-        self.load_home()
+    def action_inbox(self) -> None:
+        self.load_inbox()
 
     def action_portfolio(self) -> None:
         self.load_portfolio()
@@ -390,6 +473,7 @@ class WorkspaceApp(App):
     def action_refresh(self) -> None:
         {
             "home": self.load_home,
+            "inbox": self.load_inbox,
             "portfolio": self.load_portfolio,
             "initiative": self.load_initiative,
             "task": self.load_task,
