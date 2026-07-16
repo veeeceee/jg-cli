@@ -18,7 +18,8 @@ from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
+from textual.screen import Screen
 from textual.widgets import Footer, ListItem, ListView, Static
 
 from jg import reconcile as rec
@@ -47,6 +48,27 @@ class Incoming:
     label: str
     detail: str
     url: str = ""
+
+
+@dataclass
+class Card:
+    key: str
+    summary: str
+    status: str
+    state: rec.State | None = None
+    has_pr: bool = False
+    rec_item: rec.ReconcileItem | None = None
+
+
+@dataclass
+class ProjectView:
+    name: str
+    done: int
+    total: int
+    todo: list[Card]
+    inprog: list[Card]
+    resolving: list[Card]
+    prs: list[Incoming]
 
 
 async def gather_flow(config: Config) -> tuple[list[Incoming], list[rec.ReconcileItem], list[rec.ReconcileItem]]:
@@ -78,6 +100,68 @@ async def gather_flow(config: Config) -> tuple[list[Incoming], list[rec.Reconcil
     return incoming, in_progress, resolving
 
 
+async def gather_project(config: Config, project: object) -> ProjectView:
+    """The per-plan dashboard data: board (To-Do / In-Progress / Resolving) with
+    reconcile state on cards, done-count for health, and this plan's PRs."""
+    from jg.api import JiraClient
+
+    jql = getattr(project, "jql", "") or f"project = {config.default_project}"
+    tickets: list[dict] = []
+    try:
+        async with JiraClient(config) as api:
+            data = await api.search_jql(jql, fields=["summary", "status"], max_results=200)
+        tickets = data.get("issues", [])
+    except Exception:
+        pass
+
+    rec_items = await rec.gather(config)
+    item_by_key = {i.key: i for i in rec_items if i.key}
+
+    prs_raw: list[dict] = []
+    try:
+        from jg import github
+
+        repos = set(getattr(project, "repos", None) or [])
+        for pr in await asyncio.to_thread(github.my_open_prs):
+            repo = (pr.get("repository") or {}).get("nameWithOwner", "")
+            if not repos or repo in repos:
+                prs_raw.append(pr)
+    except Exception:
+        pass
+    pr_keys = {rec.extract_key(p.get("headRefName", "") or p.get("title", "")) for p in prs_raw}
+    pr_keys.discard(None)
+
+    todo: list[Card] = []
+    inprog: list[Card] = []
+    resolving: list[Card] = []
+    done = 0
+    total = 0
+    for iss in tickets:
+        f = iss.get("fields") or {}
+        st = f.get("status") or {}
+        cat = (st.get("statusCategory") or {}).get("name") or ""
+        status = st.get("name", "")
+        key = iss.get("key", "")
+        total += 1
+        if cat == "Done":
+            done += 1
+            continue
+        item = item_by_key.get(key)
+        card = Card(key, f.get("summary", "") or "", status, item.state if item else None, key in pr_keys, item)
+        if cat == "To Do":
+            todo.append(card)
+        elif rec.is_resolving_status(status):
+            resolving.append(card)
+        else:
+            inprog.append(card)
+
+    prs = [
+        Incoming("review", f"{(p.get('repository') or {}).get('nameWithOwner', '?')}#{p.get('number')}", p.get("title", ""), p.get("url", ""))
+        for p in prs_raw
+    ]
+    return ProjectView(getattr(project, "name", "project"), done, total, todo, inprog, resolving, prs)
+
+
 class _Header(ListItem):
     def __init__(self, text: str):
         super().__init__(Static(Text(text, style="bold #565f89")))
@@ -104,6 +188,115 @@ class _FlowRow(ListItem):
         line.append(f"{label:<11}", style=color)
         line.append((item.summary or item.session_title or "")[:50], style="#a9b1d6")
         super().__init__(Static(line))
+
+
+class _ProjectCard(ListItem):
+    def __init__(self, card: Card):
+        self.card = card
+        line = Text("")
+        if card.state is not None and card.state in _STATE:
+            g, color, _ = _STATE[card.state]
+            line.append(f"{g} ", style=color)
+        line.append(f"{card.key} ", style="bold #c0caf5")
+        line.append(card.summary[:32], style="#a9b1d6")
+        if card.has_pr:
+            line.append("  ⎇", style="magenta")
+        super().__init__(Static(line))
+
+
+class ProjectScreen(Screen):
+    """The per-plan dashboard lens: health + board (with reconcile on cards) + PRs.
+    `w` opens the project workspace (docs/research); `esc` returns to the flow."""
+
+    DEFAULT_CSS = """
+    ProjectScreen { background: #16161e; }
+    #proj-health { height: 1; padding: 0 1; }
+    #proj-board { height: 1fr; }
+    .pcol { width: 1fr; border-right: solid #2a2e42; }
+    .pcol .ch { color: #565f89; padding: 0 1; height: 1; }
+    .pcol ListView { background: #16161e; }
+    .pcol ListView > ListItem { background: #16161e; padding: 0 1; }
+    #proj-prs-h { color: #565f89; padding: 0 1; height: 1; }
+    #proj-prs { height: auto; max-height: 6; background: #16161e; }
+    #proj-prs > ListItem { background: #16161e; padding: 0; }
+    """
+    BINDINGS = [  # noqa: RUF012
+        Binding("escape", "app.pop_screen", "back"),
+        Binding("w", "workspace", "workspace"),
+        Binding("r", "reload", "refresh"),
+        Binding("q", "quit", "quit"),
+    ]
+
+    _COLS = (("todo", "TO DO"), ("inprog", "IN PROGRESS"), ("resolving", "RESOLVING"))
+
+    def __init__(self, project: object, config: Config):
+        super().__init__()
+        self.project = project
+        self.config = config
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="proj-health")
+        with Horizontal(id="proj-board"):
+            for col, name in self._COLS:
+                with Vertical(classes="pcol"):
+                    yield Static(name, id=f"h-{col}", classes="ch")
+                    yield ListView(id=f"c-{col}")
+        yield Static("PRs", id="proj-prs-h")
+        yield ListView(id="proj-prs")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.run_worker(self._load())
+
+    async def action_reload(self) -> None:
+        await self._load()
+
+    async def _load(self) -> None:
+        try:
+            v = await gather_project(self.config, self.project)
+        except Exception as e:
+            self.notify(f"load failed: {type(e).__name__}", severity="error")
+            return
+        pct = round(100 * v.done / v.total) if v.total else 0
+        self.query_one("#proj-health", Static).update(
+            Text.assemble((f"{v.name}  ", "bold #ffffff"), (f"{pct}% done · {v.done}/{v.total}", "#565f89"))
+        )
+        for (col, name), cards in zip(self._COLS, (v.todo, v.inprog, v.resolving), strict=True):
+            self.query_one(f"#h-{col}", Static).update(Text(f"{name}  {len(cards)}", style="#565f89"))
+            lv = self.query_one(f"#c-{col}", ListView)
+            await lv.clear()
+            for c in cards:
+                await lv.append(_ProjectCard(c))
+        prs = self.query_one("#proj-prs", ListView)
+        await prs.clear()
+        for p in v.prs:
+            await prs.append(_IncomingRow(p))
+
+    def action_workspace(self) -> None:
+        from jg.tui import ProjectDetailModal
+
+        self.app.push_screen(ProjectDetailModal(self.project, self.config))
+
+    @on(ListView.Selected)
+    def _sel(self, ev: ListView.Selected) -> None:
+        item = ev.item
+        if isinstance(item, _ProjectCard):
+            self._open_card(item.card)
+        elif isinstance(item, _IncomingRow) and item.item.url:
+            webbrowser.open(item.item.url)
+            self.notify(f"opened {item.item.label}", severity="information")
+
+    def _open_card(self, card: Card) -> None:
+        r = card.rec_item
+        if r is not None and r.pane_id:
+            from jg import tmux
+
+            tmux.select_pane(r.pane_id)
+            self.notify(f"jumped to {card.key} · pane {r.pane_id}", severity="information")
+            return
+        if self.config.default_cloud_url:
+            webbrowser.open(f"{self.config.default_cloud_url.rstrip('/')}/browse/{card.key}")
+            self.notify(f"opened {card.key}", severity="information")
 
 
 class _RailItem(ListItem):
@@ -194,9 +387,7 @@ class FlowApp(App):
         if not isinstance(item, _RailItem):
             return
         if item.action == "plan" and item.project is not None:
-            from jg.tui import ProjectDetailModal
-
-            self.push_screen(ProjectDetailModal(item.project, self.config))
+            self.push_screen(ProjectScreen(item.project, self.config))
         elif item.action == "roadmap":
             from jg.tui import RoadmapModal
 
