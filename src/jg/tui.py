@@ -3090,19 +3090,34 @@ class ChCommands(Provider):
 
     @property
     def app_actions(self) -> list[tuple[str, str, str]]:
-        # (name, help, app-action-name)
+        # (name, help, app-action-name). This is the discovery layer — every
+        # action lives here with a searchable name, so nothing depends on
+        # remembering a keystroke. `ctrl+p` → type intent → run.
         return [
-            ("Refresh", "Reload sprint + PRs", "refresh"),
-            ("Open ticket", "Show details for the focused ticket", "open_detail"),
-            ("Transition", "Move focused ticket to a new status", "transition"),
-            ("Assign", "Reassign focused ticket", "assign"),
-            ("Comment", "Comment on focused ticket", "comment"),
-            ("Open in browser", "Open focused ticket or PR", "open_browser"),
-            ("Brainstorm", "Open Claude with project context (All mode → pick one project or all)", "brainstorm"),
-            ("Filter", "Filter cards by key or summary", "focus_filter"),
-            ("Cycle theme", "Cycle through built-in Textual themes", "cycle_theme"),
-            ("Help", "Show keybindings", "help"),
-            ("Quit", "Exit", "quit"),
+            # focused-item actions
+            ("Open ticket / detail", "Show details for the focused ticket", "open_detail"),
+            ("Transition ticket", "Move the focused ticket to a new status", "transition"),
+            ("Assign ticket", "Reassign the focused ticket", "assign"),
+            ("Comment on ticket", "Comment on the focused ticket", "comment"),
+            ("Move ticket to sprint", "Move the focused ticket to a sprint or backlog", "move_sprint"),
+            ("Claude on focused item", "Open a Claude pane for the focused ticket / PR / repo", "ai_on_card"),
+            ("Editor on focused item", "Open the editor for the focused ticket / PR / repo", "editor_on_card"),
+            ("Open in browser", "Open the focused ticket / PR / repo / Zoho ticket", "open_browser"),
+            # higher-order features (previously only reachable via specific keys)
+            ("Roadmap", "Portfolio view: every epic with child progress", "roadmap"),
+            ("Escalate Zoho → Jira", "Turn the focused Zoho support ticket into a Jira task (gated)", "escalate"),
+            ("Brainstorm new tickets", "Open Claude with project context to ideate tickets", "brainstorm"),
+            # kanban views
+            ("View: sprint", "Kanban — current sprint", "view_sprint"),
+            ("View: backlog", "Kanban — backlog", "view_backlog"),
+            ("View: all open", "Kanban — all open issues", "view_all"),
+            ("View: recent done", "Kanban — recently completed", "view_recent"),
+            # utility
+            ("Filter cards", "Filter the kanban by key or summary", "focus_filter"),
+            ("Refresh", "Reload sprint + PRs + inbox", "refresh"),
+            ("Cycle theme", "Cycle through the color themes", "cycle_theme"),
+            ("Help / keybindings", "Show the full keybinding reference", "help"),
+            ("Quit", "Exit the dashboard", "quit"),
         ]
 
     async def discover(self) -> Hits:
@@ -3296,7 +3311,7 @@ class ChDashboard(App):
         Binding("B", "brainstorm", "brainstorm", show=True),
         Binding("p", "project_overview", "project", show=True),
         Binding("g", "roadmap", "roadmap", show=True),
-        Binding("J", "escalate", "escalate→jira", show=False),
+        Binding("J", "escalate", "escalate→jira", show=True),
         Binding("enter", "open_detail", "open", show=True),
         Binding("o", "open_browser", "browser", show=True),
         Binding("slash", "focus_filter", "filter", show=True),
@@ -4058,14 +4073,19 @@ class ChDashboard(App):
                 return "pr"
             if isinstance(item, RepoItem):
                 return "repo"
+            if isinstance(item, ZohoRow):
+                return "zoho"
         return "none"
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Filter footer entries by what's currently focused."""
+        """Filter footer entries by what's currently focused (context-aware hint bar)."""
         kind = self._focused_kind()
         # Ticket-only actions
-        if action in ("transition", "assign", "comment"):
+        if action in ("transition", "assign", "comment", "move_sprint"):
             return kind == "ticket"
+        # Escalate a Zoho support ticket → Jira
+        if action == "escalate":
+            return kind == "zoho"
         # AI works on any of the three; keep visible always
         if action == "ai_on_card":
             return kind in ("ticket", "pr", "repo")
