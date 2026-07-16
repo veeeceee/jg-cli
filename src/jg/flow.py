@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import webbrowser
 from dataclasses import dataclass
+from typing import ClassVar
 
 from rich.text import Text
 from textual import on
@@ -24,6 +25,21 @@ from textual.widgets import Footer, ListItem, ListView, Static
 
 from jg import reconcile as rec
 from jg.config import Config
+
+
+def _bar(done: int, total: int, width: int = 16) -> str:
+    filled = round(width * done / total) if total else 0
+    return "█" * filled + "░" * (width - filled)
+
+
+def _shift_focus(screen, ids: list[str], delta: int) -> None:
+    """Move focus across a fixed set of ListViews (panel navigation)."""
+    panels = [screen.query_one(i, ListView) for i in ids]
+    cur = next((idx for idx, p in enumerate(panels) if p.has_focus), 0)
+    nxt = panels[(cur + delta) % len(panels)]
+    if nxt.index is None and len(nxt.children):
+        nxt.index = 0
+    nxt.focus()
 
 # reconcile states, partitioned into the two flow buckets (tracked = backlog,
 # excluded from the flow-home).
@@ -221,6 +237,10 @@ class ProjectScreen(Screen):
     #proj-prs > ListItem { background: #16161e; padding: 0; }
     """
     BINDINGS = [  # noqa: RUF012
+        Binding("l", "focus_right", "→ column", show=True),
+        Binding("h", "focus_left", "← column", show=False),
+        Binding("right", "focus_right", "→ column", show=False),
+        Binding("left", "focus_left", "← column", show=False),
         Binding("escape", "app.pop_screen", "back"),
         Binding("w", "workspace", "workspace"),
         Binding("r", "reload", "refresh"),
@@ -228,6 +248,13 @@ class ProjectScreen(Screen):
     ]
 
     _COLS = (("todo", "TO DO"), ("inprog", "IN PROGRESS"), ("resolving", "RESOLVING"))
+    _PANELS: ClassVar[list[str]] = ["#c-todo", "#c-inprog", "#c-resolving", "#proj-prs"]
+
+    def action_focus_left(self) -> None:
+        _shift_focus(self, self._PANELS, -1)
+
+    def action_focus_right(self) -> None:
+        _shift_focus(self, self._PANELS, 1)
 
     def __init__(self, project: object, config: Config):
         super().__init__()
@@ -259,18 +286,28 @@ class ProjectScreen(Screen):
             return
         pct = round(100 * v.done / v.total) if v.total else 0
         self.query_one("#proj-health", Static).update(
-            Text.assemble((f"{v.name}  ", "bold #ffffff"), (f"{pct}% done · {v.done}/{v.total}", "#565f89"))
+            Text.assemble(
+                (f"{v.name}  ", "bold #ffffff"),
+                (f"{_bar(v.done, v.total)} ", "#9ece6a"),
+                (f"{pct}%  ", "bold #c0caf5"),
+                (f"{v.done}/{v.total} done", "#565f89"),
+            )
         )
+        first_filled: str | None = None
         for (col, name), cards in zip(self._COLS, (v.todo, v.inprog, v.resolving), strict=True):
             self.query_one(f"#h-{col}", Static).update(Text(f"{name}  {len(cards)}", style="#565f89"))
             lv = self.query_one(f"#c-{col}", ListView)
             await lv.clear()
             for c in cards:
                 await lv.append(_ProjectCard(c))
+            if cards and first_filled is None:
+                first_filled = f"#c-{col}"
         prs = self.query_one("#proj-prs", ListView)
         await prs.clear()
         for p in v.prs:
             await prs.append(_IncomingRow(p))
+        if first_filled:
+            self.query_one(first_filled, ListView).focus()
 
     def action_workspace(self) -> None:
         from jg.tui import ProjectDetailModal
@@ -321,16 +358,27 @@ class FlowApp(App):
     #flow:focus > ListItem.--highlight { background: #1c1e2b; }
     """
     BINDINGS = [  # noqa: RUF012
+        Binding("l", "focus_right", "→ list", show=True),
+        Binding("h", "focus_left", "← scope", show=True),
+        Binding("right", "focus_right", "→ list", show=False),
+        Binding("left", "focus_left", "← scope", show=False),
         Binding("q", "quit", "quit"),
         Binding("r", "refresh", "refresh"),
     ]
+    _PANELS: ClassVar[list[str]] = ["#scope", "#flow"]
 
     def __init__(self, config: Config):
         super().__init__()
         self.config = config
 
+    def action_focus_left(self) -> None:
+        _shift_focus(self, self._PANELS, -1)
+
+    def action_focus_right(self) -> None:
+        _shift_focus(self, self._PANELS, 1)
+
     def compose(self) -> ComposeResult:
-        yield Static("jg · my work — incoming / in-progress / resolving   (enter: jump/open · r: refresh · q: quit)", id="title")
+        yield Static("jg · my work — incoming / in-progress / resolving   (h/l: panels · enter: jump/open · r: refresh · q: quit)", id="title")
         with Horizontal(id="body"):
             yield ListView(id="scope")
             yield ListView(id="flow")
