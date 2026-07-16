@@ -18,6 +18,7 @@ from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal
 from textual.widgets import Footer, ListItem, ListView, Static
 
 from jg import reconcile as rec
@@ -105,13 +106,26 @@ class _FlowRow(ListItem):
         super().__init__(Static(line))
 
 
+class _RailItem(ListItem):
+    def __init__(self, action: str, label: str, project: object = None, active: bool = False):
+        self.action = action
+        self.project = project
+        t = Text("▸ " if active else "  ", style="#ff79c6")
+        t.append(label, style="bold #ff79c6" if active else "#a9b1d6")
+        super().__init__(Static(t))
+
+
 class FlowApp(App):
     CSS = """
     Screen { background: #16161e; }
     #title { padding: 0 1; color: #565f89; height: 1; }
-    ListView { background: #16161e; }
-    ListView > ListItem { background: #16161e; padding: 0 0; }
-    ListView:focus > ListItem.--highlight { background: #1c1e2b; }
+    #body { height: 1fr; }
+    #scope { width: 18; border-right: solid #2a2e42; background: #14151d; }
+    #scope > ListItem { background: #14151d; padding: 0 1; }
+    #scope:focus > ListItem.--highlight { background: #1c1e2b; }
+    #flow { width: 1fr; background: #16161e; }
+    #flow > ListItem { background: #16161e; padding: 0; }
+    #flow:focus > ListItem.--highlight { background: #1c1e2b; }
     """
     BINDINGS = [  # noqa: RUF012
         Binding("q", "quit", "quit"),
@@ -124,11 +138,22 @@ class FlowApp(App):
 
     def compose(self) -> ComposeResult:
         yield Static("jg · my work — incoming / in-progress / resolving   (enter: jump/open · r: refresh · q: quit)", id="title")
-        yield ListView(id="flow")
+        with Horizontal(id="body"):
+            yield ListView(id="scope")
+            yield ListView(id="flow")
         yield Footer()
 
     def on_mount(self) -> None:
-        self.run_worker(self._refresh())
+        self.run_worker(self._init())
+
+    async def _init(self) -> None:
+        rail = self.query_one("#scope", ListView)
+        await rail.append(_RailItem("mywork", "my work", active=True))
+        for p in self.config.projects:
+            await rail.append(_RailItem("plan", p.name, project=p))
+        await rail.append(_RailItem("roadmap", "roadmap"))
+        await self._refresh()
+        self.query_one("#flow", ListView).focus()
 
     async def action_refresh(self) -> None:
         await self._refresh()
@@ -155,12 +180,29 @@ class FlowApp(App):
 
     @on(ListView.Selected)
     def _selected(self, ev: ListView.Selected) -> None:
+        if ev.list_view.id == "scope":
+            self._rail(ev.item)
+            return
         item = ev.item
         if isinstance(item, _FlowRow):
             self._open_flow(item.item)
         elif isinstance(item, _IncomingRow) and item.item.url:
             webbrowser.open(item.item.url)
             self.notify(f"opened {item.item.label}", severity="information")
+
+    def _rail(self, item: ListItem) -> None:
+        if not isinstance(item, _RailItem):
+            return
+        if item.action == "plan" and item.project is not None:
+            from jg.tui import ProjectDetailModal
+
+            self.push_screen(ProjectDetailModal(item.project, self.config))
+        elif item.action == "roadmap":
+            from jg.tui import RoadmapModal
+
+            self.push_screen(RoadmapModal(self.config))
+        else:
+            self.query_one("#flow", ListView).focus()
 
     def _open_flow(self, r: rec.ReconcileItem) -> None:
         """Jump to the live session if there is one; else open the ticket."""
