@@ -225,25 +225,69 @@ Clustering groups items from Jira / GitHub / Zoho / Slack / email / sessions tha
 belong to the same underlying work-thread (the Nabla example). It follows the
 same floor-plus-fuzzy pattern, recursively:
 
-- **Deterministic backbone** — explicit cross-references are ground-truth edges:
+- **Deterministic backbone** — explicit cross-references are the starting edges:
   a Jira key in a Slack message, the Zoho `Associated Jira Issues` field, a PR
   branch naming the ticket, a session pane titled with the key. Build the
-  backbone from these first; the LLM never overrides an explicit edge.
+  backbone from these first, but treat them as high-confidence priors, not axioms
+  (see below).
 - **LLM assigns the loose items** — comms/sessions with no explicit key, judged
   on content + participants + entities (people, client names, product modules).
-- **Transparency + confidence** — render the edge reason ("linked via CH-142" =
-  deterministic, trust it; "grouped: both about Nabla" = LLM inference,
-  confidence-scored, glance-check it). Calibrated trust over a black box.
+- **Transparency + confidence** — render the edge reason ("linked via CH-142
+  branch" vs "mentioned CH-142 in passing" vs "grouped: both about Nabla") with a
+  confidence, so a weak or suspect link is glance-checkable. Calibrated trust over
+  a black box.
 
-### Open fork: what clusters anchor on
+### Deterministic edges are priors, not axioms
 
-- **Anchored** (current lean): clusters hang off the canonical graph
-  (project → ticket); the LLM assigns each loose item to an existing anchor or
-  marks it *unclustered*. The unclustered residual is the "new work with no
-  ticket yet" pile, which feeds escalation (file a ticket → the cluster gets its
-  anchor). Ties clustering to the actionable graph.
-- **Emergent**: the LLM discovers threads freely with no anchor. Catches new work
-  immediately but floats free of the graph and is fuzzier to trust.
+Extraction is deterministic; the link's validity is not. The regex reliably finds
+"CH-142" in a message, but stale references, typos, copied branch names, a quoted
+ticket, or a speculatively-filled Zoho field all produce a clean edge that is
+semantically wrong. Treating the backbone as ground truth compounds badly: there
+is no correction path, and one bad edge that causes a *merge* contaminates two
+threads at once.
+
+So edges are high-confidence priors, still falsifiable:
+
+- **Weight by how deliberately the link was authored.** A PR branch, the Zoho
+  field, a jg-set pane title are authored-links — strong. A key in free text is a
+  *mention* — weak, needs corroboration before it is load-bearing.
+- **Cheap deterministic sanity checks downgrade suspect edges** — does the key
+  resolve to a real ticket, in a project I actually work? A key pointing elsewhere
+  is probably a passing mention.
+- **The LLM dissents, it does not silently override.** It can flag a contradiction
+  (edge says CH-142, content is clearly unrelated) through the transparency layer;
+  the human resolves it. That is the correction path.
+- **Assignment vs. merge asymmetry.** Assigning an item to a thread is tentative
+  and reversible, so a weak edge may do it. Merging two established threads is
+  contaminating and hard to undo, so it demands corroboration — multiple edges or
+  content agreement — never a single weak edge. This is what stops one bad edge
+  from spreading.
+
+Nothing is unquestionable ground truth: deterministic edges are strong priors,
+the LLM corroborates and dissents, and the transparency layer plus gates make the
+human the final arbiter — the "unjoined-but-visible beats confidently-mismatched"
+rule, one level down.
+
+### Anchoring: anchored-first, emergent on the residual
+
+The anchored-vs-emergent choice dissolves — use both, layered. Anchor every item
+that can attach to the canonical graph (explicit edges + LLM assignment to an
+existing project/ticket). Then run emergent clustering only on the *residual* —
+items that anchored to nothing — so a real thread with no ticket yet (a Zoho
+ticket + two Slack DMs + an email about Nabla) is recognized as one thread rather
+than scattered across a flat "unclustered" pile. This is also the frugal option:
+anchored assignment is a bounded classification against N known anchors, and
+emergent runs only over the leftover.
+
+Two open sub-questions:
+
+- **Stability** — emergent threads must be sticky: named once, they persist, and
+  new items join existing threads rather than re-partitioning the residual each
+  run. Otherwise membership flickers and trust erodes (the reconcile flicker, one
+  level down).
+- **Promotion path** — an emergent residual thread is a ticket candidate:
+  escalate one item → the whole thread re-homes onto the new anchor and leaves the
+  residual, so the residual drains into the graph instead of growing forever.
 
 ## Decisions, working defaults, and open forks
 
@@ -258,6 +302,9 @@ Decided:
   gated.
 - Deterministic floor runs synchronously; the LLM is an async enrichment layer.
 - Clustering is the first LLM investment; triage/noise-filter is second.
+- Clustering is anchored-first with emergent clustering on the residual.
+- Cluster edges are falsifiable priors weighted by how deliberately they were
+  authored; assignment is tentative and reversible, merging demands corroboration.
 
 Working defaults (revisable):
 
@@ -267,8 +314,8 @@ Working defaults (revisable):
 
 Open:
 
-- Clustering anchor: anchored vs. emergent (leaning anchored + unclustered
-  residual).
+- Emergent cluster stability: how threads stay sticky across refreshes.
+- Promotion path mechanics: emergent thread → escalate → re-home onto anchor.
 - Exact resume UX: how the cold/fresh-brief choice is presented.
 - How much reconcile is auto-detected on refresh vs. computed on demand.
 - The unbuilt gate edges: task → plan (reality revises the plan) and
