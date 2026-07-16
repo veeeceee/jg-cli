@@ -279,15 +279,51 @@ than scattered across a flat "unclustered" pile. This is also the frugal option:
 anchored assignment is a bounded classification against N known anchors, and
 emergent runs only over the leftover.
 
-Two open sub-questions:
+### Stability of emergent threads
 
-- **Stability** — emergent threads must be sticky: named once, they persist, and
-  new items join existing threads rather than re-partitioning the residual each
-  run. Otherwise membership flickers and trust erodes (the reconcile flicker, one
-  level down).
-- **Promotion path** — an emergent residual thread is a ticket candidate:
-  escalate one item → the whole thread re-homes onto the new anchor and leaves the
-  residual, so the residual drains into the graph instead of growing forever.
+Emergent threads must be sticky or membership flickers and trust erodes (the
+reconcile flicker, one level down). Flicker comes from re-partitioning the
+residual from scratch each run, so the fix is structural:
+
+- **Durable thread objects + incremental join.** A thread is a stored entity
+  (stable ID, LLM-authored descriptor, member list) that persists across
+  refreshes. Each refresh classifies only the *new* residual items — join an
+  existing thread or spawn one — and never re-derives settled membership.
+- **The descriptor is the thread's durable self and its label.** New items match
+  against an LLM-authored descriptor ("Nabla AI-scribe integration: credentials,
+  KT, the Zoho ticket"), not an embedding — transparent, cheap, and it doubles as
+  the displayed name. Names are sticky too: the descriptor updates only on a
+  material scope shift, not every run.
+- **Join is cheap and every-refresh; merge/split is rare and corroboration-gated**
+  (the same asymmetry). A single new item never silently merges two threads.
+- **Sticky but correctable.** Stickiness preserves early mistakes, so it stays
+  falsifiable: human correction (split/re-home an item) plus transparency
+  (low-confidence memberships surfaced), and a *manual* re-audit trigger. Because
+  the re-audit is human-initiated, its re-partition is expected rather than
+  surprise flicker; it refines rather than resets (preserves identity where it
+  holds), scopes to one thread by default, and reports its diff. No automatic
+  re-partitioning ever.
+
+### Promotion: emergent thread → anchored, at the escalate gate
+
+Promotion rides on the escalate gate; no new mechanism. Escalating one item from
+an emergent thread creates a Jira ticket, and the escalated item gets the hard
+bidirectional link (Zoho `Associated Jira Issues` ← the new key). Membership is
+**ratified at the gate**, not auto-migrated: when the escalated item belongs to a
+multi-item emergent thread, the gate shows the members (pre-checked from the LLM
+assignment) and the human confirms or prunes which come onto the new anchor. This
+is the natural point to harden soft, LLM-assigned membership into a real anchor —
+the members were priors, and escalation is already a gate.
+
+- **Confirmed members re-home onto the anchor.** Those that can hold a hard link
+  (another Zoho ticket) get the key written in; those that cannot (Slack, email)
+  become soft members of the anchored cluster, still shown transparently as soft.
+- **Pruned members fall back to the residual** — not deleted; they just don't join
+  this anchor, and can join or seed another thread later.
+- **The emergent thread dissolves** into the anchored cluster and the residual
+  shrinks — the residual draining into the graph over time.
+- **Solo escalations skip ratification** — no emergent threadmates, no extra step,
+  so friction is proportional to the value.
 
 ## Decisions, working defaults, and open forks
 
@@ -305,6 +341,12 @@ Decided:
 - Clustering is anchored-first with emergent clustering on the residual.
 - Cluster edges are falsifiable priors weighted by how deliberately they were
   authored; assignment is tentative and reversible, merging demands corroboration.
+- Emergent-thread stability: durable thread objects + incremental join; sticky
+  LLM-authored descriptors; human correction plus a manual, identity-preserving,
+  diff-reporting re-audit; no automatic re-partitioning.
+- Promotion rides the escalate gate with membership ratified (pre-checked,
+  prunable) at the gate; solo escalations skip it; pruned members return to the
+  residual.
 
 Working defaults (revisable):
 
@@ -314,8 +356,6 @@ Working defaults (revisable):
 
 Open:
 
-- Emergent cluster stability: how threads stay sticky across refreshes.
-- Promotion path mechanics: emergent thread → escalate → re-home onto anchor.
 - Exact resume UX: how the cold/fresh-brief choice is presented.
 - How much reconcile is auto-detected on refresh vs. computed on demand.
 - The unbuilt gate edges: task → plan (reality revises the plan) and
