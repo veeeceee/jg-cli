@@ -20,7 +20,7 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, ListItem, ListView, Static
 
 from jg import reconcile as rec
@@ -220,6 +220,121 @@ class _ProjectCard(ListItem):
         super().__init__(Static(line))
 
 
+class FlowDetailModal(ModalScreen):
+    """Reconcile detail + actions for a task. Dismisses True when a write happened
+    (transition / start session) so the caller refreshes."""
+
+    DEFAULT_CSS = """
+    FlowDetailModal { align: center middle; background: #000000 85%; }
+    FlowDetailModal #box { background: #1c1c1e; border: solid #565f89; width: 76; height: auto; padding: 1 2; }
+    FlowDetailModal #det { height: auto; }
+    FlowDetailModal #acts { color: #565f89; margin-top: 1; }
+    """
+    BINDINGS = [  # noqa: RUF012
+        Binding("escape", "cancel", "close"),
+        Binding("j", "jump", "jump"),
+        Binding("s", "start", "start"),
+        Binding("m", "move", "transition"),
+        Binding("o", "open", "open ticket"),
+    ]
+
+    def __init__(self, config: Config, item: rec.ReconcileItem):
+        super().__init__()
+        self.config = config
+        self.item = item
+
+    def _target(self) -> str | None:
+        if self.item.state == rec.State.UNDECLARED:
+            return "In Progress"
+        if self.item.state == rec.State.DONE_BUT_OPEN:
+            return "Done"
+        return None
+
+    def compose(self) -> ComposeResult:
+        i = self.item
+        glyph, color, label = _STATE.get(i.state, (" ", "white", str(i.state)))
+        det = Text()
+        det.append(f"{i.key or '—'}  ", style="bold #ffffff")
+        det.append(f"{i.summary}\n\n", style="#c0caf5")
+        det.append("declared  ", style="#565f89")
+        det.append(f"{i.jira_status or '—'}\n", style="#a9b1d6")
+        det.append("actual    ", style="#565f89")
+        det.append(f"{'warm session' if i.session_warm else 'cold session' if i.session_warm is False else 'no live session'}\n", style="#a9b1d6")
+        det.append("artifact  ", style="#565f89")
+        det.append(f"{('PR ' + i.pr_state) if i.pr_state else 'no PR'}\n", style="#a9b1d6")
+        det.append("state     ", style="#565f89")
+        det.append(f"{glyph} {label}", style=color)
+
+        acts = Text()
+        if i.pane_id:
+            acts.append("[j] jump to session   ", style="#9ece6a")
+        else:
+            acts.append("[s] start session   ", style="#9ece6a")
+        tgt = self._target()
+        if tgt:
+            acts.append(f"[m] → {tgt}   ", style="#bb9af7")
+        acts.append("[o] open ticket   [esc] close", style="#565f89")
+
+        with Vertical(id="box"):
+            yield Static(det, id="det")
+            yield Static(acts, id="acts")
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_jump(self) -> None:
+        if self.item.pane_id:
+            from jg import tmux
+
+            tmux.select_pane(self.item.pane_id)
+            self.dismiss(None)
+        else:
+            self.app.notify("no live session for this ticket", severity="warning")
+
+    def action_start(self) -> None:
+        from jg import tmux
+
+        if not tmux.in_tmux():
+            self.app.notify("run inside tmux to start a session", severity="warning")
+            return
+        if not self.item.key:
+            return
+        cmd = f"{self.config.ai.claude_path} {self.config.ai.default_command} {self.item.key}"
+        try:
+            tmux.spawn(cmd, title=self.item.key, config=self.config.tmux)
+        except RuntimeError as e:
+            self.app.notify(str(e), severity="error")
+            return
+        self.app.notify(f"started session · {self.item.key}", severity="information")
+        self.dismiss(True)
+
+    async def action_move(self) -> None:
+        tgt = self._target()
+        if not tgt or not self.item.key:
+            self.app.notify("no quick transition for this state", severity="warning")
+            return
+        from jg.api import JiraClient
+
+        try:
+            async with JiraClient(self.config) as api:
+                trs = await api.get_transitions(self.item.key)
+                match = next((t for t in trs if tgt.lower() in (t.get("name") or "").lower()), None)
+                if match is None:
+                    self.app.notify(f"no '{tgt}' transition available", severity="warning")
+                    return
+                await api.transition_issue(self.item.key, match["id"])
+        except Exception as e:
+            self.app.notify(f"transition failed: {type(e).__name__}", severity="error")
+            return
+        self.app.notify(f"{self.item.key} → {tgt}", severity="information")
+        self.dismiss(True)
+
+    def action_open(self) -> None:
+        if self.item.key and self.config.default_cloud_url:
+            webbrowser.open(f"{self.config.default_cloud_url.rstrip('/')}/browse/{self.item.key}")
+        self.dismiss(None)
+
+
 class ProjectScreen(Screen):
     """The per-plan dashboard lens: health + board (with reconcile on cards) + PRs.
     `w` opens the project workspace (docs/research); `esc` returns to the flow."""
@@ -318,22 +433,16 @@ class ProjectScreen(Screen):
     def _sel(self, ev: ListView.Selected) -> None:
         item = ev.item
         if isinstance(item, _ProjectCard):
-            self._open_card(item.card)
+            c = item.card
+            ri = c.rec_item or rec.ReconcileItem(rec.State.TRACKED, key=c.key, jira_status=c.status, summary=c.summary)
+            self.app.push_screen(FlowDetailModal(self.config, ri), self._after)
         elif isinstance(item, _IncomingRow) and item.item.url:
             webbrowser.open(item.item.url)
             self.notify(f"opened {item.item.label}", severity="information")
 
-    def _open_card(self, card: Card) -> None:
-        r = card.rec_item
-        if r is not None and r.pane_id:
-            from jg import tmux
-
-            tmux.select_pane(r.pane_id)
-            self.notify(f"jumped to {card.key} · pane {r.pane_id}", severity="information")
-            return
-        if self.config.default_cloud_url:
-            webbrowser.open(f"{self.config.default_cloud_url.rstrip('/')}/browse/{card.key}")
-            self.notify(f"opened {card.key}", severity="information")
+    def _after(self, changed: object) -> None:
+        if changed:
+            self.run_worker(self._load())
 
 
 class _RailItem(ListItem):
@@ -426,10 +535,14 @@ class FlowApp(App):
             return
         item = ev.item
         if isinstance(item, _FlowRow):
-            self._open_flow(item.item)
+            self.push_screen(FlowDetailModal(self.config, item.item), self._after_detail)
         elif isinstance(item, _IncomingRow) and item.item.url:
             webbrowser.open(item.item.url)
             self.notify(f"opened {item.item.label}", severity="information")
+
+    def _after_detail(self, changed: object) -> None:
+        if changed:
+            self.run_worker(self._refresh())
 
     def _rail(self, item: ListItem) -> None:
         if not isinstance(item, _RailItem):
@@ -442,19 +555,6 @@ class FlowApp(App):
             self.push_screen(RoadmapModal(self.config))
         else:
             self.query_one("#flow", ListView).focus()
-
-    def _open_flow(self, r: rec.ReconcileItem) -> None:
-        """Jump to the live session if there is one; else open the ticket."""
-        if r.pane_id:
-            from jg import tmux
-
-            tmux.select_pane(r.pane_id)
-            self.notify(f"jumped to {r.key or 'session'} · pane {r.pane_id}", severity="information")
-            return
-        if r.key and self.config.default_cloud_url:
-            webbrowser.open(f"{self.config.default_cloud_url.rstrip('/')}/browse/{r.key}")
-            self.notify(f"opened {r.key}", severity="information")
-
 
 def run_flow(config: Config) -> None:
     FlowApp(config).run()
