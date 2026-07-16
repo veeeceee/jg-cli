@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass
 
 from jg.config import TmuxConfig
@@ -18,6 +19,37 @@ from jg.config import TmuxConfig
 class TmuxSpawnResult:
     target: str  # "pane:<id>" or "window:<id>" or "session:<name>"
     inside_tmux: bool
+
+
+@dataclass
+class PaneInfo:
+    pane_id: str
+    title: str
+    idle_seconds: float | None  # since last activity; None if unparseable
+
+
+def list_panes() -> list[PaneInfo]:
+    """Every tmux pane with title + idle seconds. Empty when not in tmux or
+    tmux is unavailable — the reconcile floor treats "no live sessions" as a
+    valid state, not an error."""
+    if not in_tmux():
+        return []
+    res = _run(["tmux", "list-panes", "-a", "-F", "#{pane_id}|#{pane_activity}|#{pane_title}"])
+    if res.returncode != 0:
+        return []
+    now = time.time()
+    panes: list[PaneInfo] = []
+    for line in res.stdout.splitlines():
+        parts = line.split("|", 2)
+        if len(parts) != 3:
+            continue
+        pane_id, activity, title = parts
+        try:
+            idle: float | None = max(0.0, now - float(activity))
+        except ValueError:
+            idle = None
+        panes.append(PaneInfo(pane_id=pane_id, title=title, idle_seconds=idle))
+    return panes
 
 
 def in_tmux() -> bool:
