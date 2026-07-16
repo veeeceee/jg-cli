@@ -63,6 +63,7 @@ reviewDecision
 url
 updatedAt
 state
+headRefName
 author { login }
 repository { nameWithOwner }
 """
@@ -110,6 +111,7 @@ def _gql_search(query: str, limit: int) -> list[dict[str, Any]]:
             "url": n.get("url"),
             "updatedAt": n.get("updatedAt"),
             "state": n.get("state"),
+            "headRefName": n.get("headRefName", ""),
             "author": n.get("author") or {},
             "repository": {"nameWithOwner": repo},
         })

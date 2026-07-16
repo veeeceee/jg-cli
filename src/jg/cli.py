@@ -60,6 +60,7 @@ def _register() -> None:
         roadmap,
         search,
         sprint,
+        reconcile,
         testcases,
         transition,
         view,
@@ -83,6 +84,7 @@ def _register() -> None:
     cli.add_command(project.project)
     cli.add_command(research.research)
     cli.add_command(roadmap.roadmap)
+    cli.add_command(reconcile.reconcile)
     cli.add_command(zoho.zoho)
     cli.add_command(dashboard.dashboard)
 

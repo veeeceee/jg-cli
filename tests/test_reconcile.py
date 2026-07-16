@@ -11,6 +11,7 @@ from jg.reconcile import (
     State,
     Ticket,
     extract_key,
+    is_resolving_status,
     reconcile,
 )
 
@@ -96,3 +97,34 @@ def test_warm_wins_when_multiple_sessions_on_one_key():
 
 def test_empty_inputs():
     assert reconcile([], [], []) == []
+
+
+def test_is_resolving_status():
+    assert is_resolving_status("Ready for Review")
+    assert is_resolving_status("In Review")
+    assert is_resolving_status("Ready for Testing")
+    assert is_resolving_status("QA")
+    assert not is_resolving_status("In Progress")
+    assert not is_resolving_status("To Do")
+
+
+def test_resolving_status_not_stalled():
+    # "In Progress" category but a review/testing status is resolving, not
+    # stalled — the fix for the CH-528/CH-453 misclassification.
+    tickets = [
+        Ticket("CH-1", "Ready for Testing", "In Progress"),
+        Ticket("CH-2", "In Review", "In Progress"),
+        Ticket("CH-3", "In Progress", "In Progress"),  # genuinely active status
+    ]
+    by = _by_key(reconcile([], tickets, []))
+    assert by["CH-1"].state is State.RESOLVING
+    assert by["CH-2"].state is State.RESOLVING
+    assert by["CH-3"].state is State.STALLED  # active status, no session/PR
+
+
+def test_jg_key_overrides_overwritten_title():
+    # Claude Code renamed the pane; the authoritative @jg_key still joins it.
+    s = Session(title="✳ Check project status", idle_seconds=10, jg_key="CH-1")
+    assert s.key == "CH-1"
+    by = _by_key(reconcile([s], [Ticket("CH-1", "In Progress", "In Progress")], []))
+    assert by["CH-1"].state is State.HEALTHY

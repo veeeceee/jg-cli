@@ -7,12 +7,15 @@ If not, opens a new tmux session and attaches.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import time
 from dataclasses import dataclass
 
 from jg.config import TmuxConfig
+
+_KEY_RE = re.compile(r"[A-Z][A-Z0-9]+-\d+")
 
 
 @dataclass
@@ -26,6 +29,16 @@ class PaneInfo:
     pane_id: str
     title: str
     idle_seconds: float | None  # since last activity; None if unparseable
+    jg_key: str = ""             # Jira key jg stamped via the @jg_key option
+
+
+def _stamp_key(pane_id: str, title: str) -> None:
+    """Record the Jira key on a jg-spawned pane as the @jg_key option. Unlike the
+    pane title (which Claude Code overwrites with activity summaries), a tmux
+    user option is jg's alone — so the reconcile join survives."""
+    m = _KEY_RE.search(title or "")
+    if m:
+        _run(["tmux", "set-option", "-p", "-t", pane_id, "@jg_key", m.group(0)])
 
 
 def list_panes() -> list[PaneInfo]:
@@ -34,21 +47,23 @@ def list_panes() -> list[PaneInfo]:
     valid state, not an error."""
     if not in_tmux():
         return []
-    res = _run(["tmux", "list-panes", "-a", "-F", "#{pane_id}|#{pane_activity}|#{pane_title}"])
+    res = _run(
+        ["tmux", "list-panes", "-a", "-F", "#{pane_id}|#{pane_activity}|#{@jg_key}|#{pane_title}"]
+    )
     if res.returncode != 0:
         return []
     now = time.time()
     panes: list[PaneInfo] = []
     for line in res.stdout.splitlines():
-        parts = line.split("|", 2)
-        if len(parts) != 3:
+        parts = line.split("|", 3)
+        if len(parts) != 4:
             continue
-        pane_id, activity, title = parts
+        pane_id, activity, jg_key, title = parts
         try:
             idle: float | None = max(0.0, now - float(activity))
         except ValueError:
             idle = None
-        panes.append(PaneInfo(pane_id=pane_id, title=title, idle_seconds=idle))
+        panes.append(PaneInfo(pane_id=pane_id, title=title, idle_seconds=idle, jg_key=jg_key))
     return panes
 
 
@@ -106,6 +121,7 @@ def spawn(command: str, title: str, config: TmuxConfig) -> TmuxSpawnResult:
             raise RuntimeError(f"tmux split failed: {res.stderr}")
         pane_id = res.stdout.strip()
         _run(["tmux", "select-pane", "-t", pane_id, "-T", title])
+        _stamp_key(pane_id, title)
         return TmuxSpawnResult(target=f"pane:{pane_id}", inside_tmux=True)
 
     # Outside tmux: create or attach to a session.
@@ -123,6 +139,7 @@ def spawn(command: str, title: str, config: TmuxConfig) -> TmuxSpawnResult:
     last_pane = _run(["tmux", "display-message", "-t", session, "-p", "#{pane_id}"]).stdout.strip()
     if last_pane:
         _run(["tmux", "select-pane", "-t", last_pane, "-T", title])
+        _stamp_key(last_pane, title)
     # Attach.
     os.execvp("tmux", ["tmux", "attach-session", "-t", session])
 

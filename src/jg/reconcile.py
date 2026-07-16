@@ -4,7 +4,8 @@ Joins three sources by Jira key — declared (Jira status), actual (a live Claud
 session in tmux), artifact (a PR) — and classifies each into a reconcile state.
 The value is the mismatches: where declared, actual, and artifact disagree.
 
-Pure logic, no I/O: the data-fetching + rendering layer feeds it lists. No LLM —
+The join + classification core is pure (no I/O, fully tested); `gather()` is a
+thin async adapter that fetches the three sources and feeds the core. No LLM —
 this is the correctness-critical floor everything else layers onto. See
 docs/work-model.md → "In-progress as Claude Code sessions, and the reconcile".
 """
@@ -14,6 +15,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+
+from jg.config import Config
 
 _JIRA_KEY_RE = re.compile(r"[A-Z][A-Z0-9]+-\d+")
 
@@ -46,17 +49,30 @@ def extract_key(text: str) -> str | None:
     return m.group(0) if m else None
 
 
+# Status names that mean "resolving" — mid-flight but past active development.
+# Jira's statusCategory is only To-Do/In-Progress/Done, so these all fall under
+# the "In Progress" category and must be told apart by name.
+_RESOLVING_HINTS = ("review", "testing", "qa", "verify", "ready for", "awaiting")
+
+
+def is_resolving_status(status: str) -> bool:
+    s = (status or "").lower()
+    return any(h in s for h in _RESOLVING_HINTS)
+
+
 @dataclass
 class Session:
-    """A live Claude/tmux pane. `title` is what jg set on spawn (the key, or
-    `decompose·CH-36`, `escalate·#1543009`, or an ad-hoc label)."""
+    """A live Claude/tmux pane. `jg_key` is the authoritative key jg stamped on
+    the pane (@jg_key option, which Claude's retitling can't touch); `title` is a
+    fallback only (Claude overwrites it with activity summaries)."""
     title: str
     idle_seconds: float | None = None
     pane_id: str = ""
+    jg_key: str = ""
 
     @property
     def key(self) -> str | None:
-        return extract_key(self.title)
+        return self.jg_key or extract_key(self.title)
 
     @property
     def warm(self) -> bool:
@@ -110,7 +126,9 @@ def _classify(ticket: Ticket | None, session_warm: bool | None, pr_state: str | 
 
     cat = ticket.status_category
     if cat == "In Progress":
-        if pr_state == "open":
+        # "Ready for Review/Testing", "In Review", etc. are resolving, not
+        # stalled — the coarse category can't tell them from active work.
+        if is_resolving_status(ticket.status) or pr_state == "open":
             return State.RESOLVING
         if session_warm is True:
             return State.HEALTHY
@@ -183,3 +201,48 @@ def reconcile(
             )
         )
     return items
+
+
+async def gather(config: Config) -> list[ReconcileItem]:
+    """Fetch the three sources (live tmux panes, my open Jira tickets, my open
+    PRs) and reconcile. Thin async I/O adapter over the pure core; each source
+    fails soft so one outage doesn't blank the whole view."""
+    import asyncio
+
+    from jg import github, tmux
+    from jg.api import JiraClient
+
+    # Only panes jg stamped with @jg_key count as task sessions — a bare shell or
+    # a Claude pane on no ticket isn't in-progress work, and relying on the title
+    # (which Claude overwrites) is what flooded the first run with noise.
+    sessions = [
+        Session(title=p.title, idle_seconds=p.idle_seconds, pane_id=p.pane_id, jg_key=p.jg_key)
+        for p in tmux.list_panes()
+        if p.jg_key
+    ]
+
+    tickets: list[Ticket] = []
+    try:
+        async with JiraClient(config) as api:
+            data = await api.search_jql(
+                "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC",
+                fields=["summary", "status"],
+                max_results=100,
+            )
+        for iss in data.get("issues", []):
+            st = (iss.get("fields") or {}).get("status") or {}
+            cat = (st.get("statusCategory") or {}).get("name") or ""
+            tickets.append(Ticket(key=iss.get("key", ""), status=st.get("name", ""), status_category=cat))
+    except Exception:
+        pass
+
+    prs: list[PR] = []
+    try:
+        for p in await asyncio.to_thread(github.my_open_prs):
+            prs.append(
+                PR(branch=p.get("headRefName", ""), state="open", title=p.get("title", ""), url=p.get("url", ""))
+            )
+    except Exception:
+        pass
+
+    return reconcile(sessions, tickets, prs)
