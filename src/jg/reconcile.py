@@ -84,6 +84,7 @@ class Ticket:
     key: str
     status: str            # display status ("In Progress", "Ready for Testing", …)
     status_category: str   # "To Do" | "In Progress" | "Done"
+    summary: str = ""
 
 
 @dataclass
@@ -103,6 +104,7 @@ class ReconcileItem:
     state: State
     key: str | None = None
     jira_status: str | None = None
+    summary: str = ""
     session_warm: bool | None = None   # None = no session
     session_title: str | None = None
     pane_id: str = ""
@@ -184,6 +186,7 @@ def reconcile(
                 state=_classify(ticket, session_warm, pr_state),
                 key=key,
                 jira_status=ticket.status if ticket else None,
+                summary=ticket.summary if ticket else "",
                 session_warm=session_warm,
                 session_title=sess[0].title if sess else None,
                 pane_id=sess[0].pane_id if sess else "",
@@ -230,9 +233,17 @@ async def gather(config: Config) -> list[ReconcileItem]:
                 max_results=100,
             )
         for iss in data.get("issues", []):
-            st = (iss.get("fields") or {}).get("status") or {}
+            fields = iss.get("fields") or {}
+            st = fields.get("status") or {}
             cat = (st.get("statusCategory") or {}).get("name") or ""
-            tickets.append(Ticket(key=iss.get("key", ""), status=st.get("name", ""), status_category=cat))
+            tickets.append(
+                Ticket(
+                    key=iss.get("key", ""),
+                    status=st.get("name", ""),
+                    status_category=cat,
+                    summary=fields.get("summary", "") or "",
+                )
+            )
     except Exception:
         pass
 
