@@ -325,6 +325,49 @@ the members were priors, and escalation is already a gate.
 - **Solo escalations skip ratification** — no emergent threadmates, no extra step,
   so friction is proportional to the value.
 
+## Incoming triage (second LLM investment)
+
+The incoming bucket is mostly noise — the real snapshot ran ~5 signal in ~30
+items. Triage separates actionable signal from noise, governed by one constraint
+the other LLM work does not share: **the error costs are asymmetric.** A false
+positive (a newsletter slips through) is mildly annoying; a false negative (a
+colleague's real ask buried as noise) is catastrophic — miss real work once and
+you stop trusting the filter. So the rule is *when unsure, surface* — the
+friction goes on suppression, the way it went on merges in clustering.
+
+The shape is the familiar floor-plus-LLM:
+
+- **The deterministic floor handles the bulk of the noise.** Hard markers carry
+  it: List-Unsubscribe / bulk headers (newsletters, marketing), known-noise
+  senders (Grafana alerts, Jira/Confluence/calendar bots, `noreply@`) → suppress.
+  Strong-signal markers → surface as actionable: a direct @mention, a
+  review-request-of-me, an assignment, a DM from a colleague, a reply to my own
+  thread. All rules, user-editable.
+- **The LLM judges only the ambiguous middle** — a human message with no clear
+  marker. Biased conservative (unsure → actionable, never suppress). Classified
+  once on arrival and cached, so a verdict does not flicker between refreshes.
+- **Suppressed is never deleted — it collapses** into an expandable "N filtered"
+  line, so every false negative is recoverable. That is what lets an aggressive
+  filter be trusted.
+- **Corrections feed the floor first.** Rescuing a suppressed item or suppressing
+  a surfaced one becomes a deterministic rule wherever it is sender/structure-
+  based ("never surface Grafana", "always surface Jaimon"); only content-based
+  ambiguity that cannot be reduced to a rule stays with the LLM. The floor grows
+  from corrections and the LLM's share shrinks over time.
+
+### Two-way, and clustering carries the FYI
+
+The bucket is binary — actionable vs suppressed — not three-way. There is a real
+middle (your own meeting notes, activity on a ticket you follow, a resolved
+alert), but a standalone FYI tier becomes a second inbox you feel obligated to
+scan, recreating the noise problem one level up. The distinguishing test is
+"would you ever go looking for it?" — and where you would look is inside the
+work-thread. So relevant FYI surfaces through **clustering**, as context on its
+thread (the Nabla meeting notes on the Nabla thread, the CH-688 activity on the
+Billing thread), pulled on demand rather than pushed daily. FYI that maps to no
+thread (a generic digest, a self-healed alert) is treated as noise: suppressed
+and expandable. The triage bucket stays binary; clustering does the FYI work.
+
 ## Decisions, working defaults, and open forks
 
 Decided:
@@ -347,6 +390,11 @@ Decided:
 - Promotion rides the escalate gate with membership ratified (pre-checked,
   prunable) at the gate; solo escalations skip it; pruned members return to the
   residual.
+- Triage is governed by asymmetric error cost: when unsure, surface. It is a
+  two-way filter (actionable vs suppressed-expandable), not three-way; relevant
+  FYI surfaces via clustering as thread-context, not a middle inbox tier;
+  corrections feed the deterministic floor first, LLM only for irreducible
+  content ambiguity.
 
 Working defaults (revisable):
 
