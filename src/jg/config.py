@@ -130,6 +130,14 @@ class GmailConfig:
 
 
 @dataclass
+class SlackConfig:
+    """Slack ingestion. The user token lives in Keychain (slack.user_token);
+    `channels` are the channel IDs you follow (Slack has no first-class 'follow',
+    so it's an explicit list). DMs + @mentions are found without config."""
+    channels: list[str] = field(default_factory=list)
+
+
+@dataclass
 class TriageConfig:
     """Incoming triage rules (phase 1: deterministic floor). Substring matches on
     the From header. `my_addresses` marks direct-to-me as actionable; jg also
@@ -201,6 +209,7 @@ class Config:
     roadmap: RoadmapConfig = field(default_factory=RoadmapConfig)
     zoho: ZohoConfig = field(default_factory=ZohoConfig)
     gmail: GmailConfig = field(default_factory=GmailConfig)
+    slack: SlackConfig = field(default_factory=SlackConfig)
     triage: TriageConfig = field(default_factory=TriageConfig)
     projects: list[Project] = field(default_factory=list)
 
@@ -326,6 +335,9 @@ class Config:
                 "query": self.gmail.query,
                 "max_results": self.gmail.max_results,
             },
+            "slack": {
+                "channels": self.slack.channels,
+            },
             "triage": {
                 "my_addresses": self.triage.my_addresses,
                 "signal_senders": self.triage.signal_senders,
@@ -390,6 +402,7 @@ class Config:
         roadmap_raw = data.get("roadmap", {})
         zoho_raw = data.get("zoho", {})
         gmail_raw = data.get("gmail", {})
+        slack_raw = data.get("slack", {})
         triage_raw = data.get("triage", {})
         return cls(
             atlassian=atlassian,
@@ -426,6 +439,7 @@ class Config:
                 query=gmail_raw.get("query", GmailConfig().query),
                 max_results=int(gmail_raw.get("max_results", 40)),
             ),
+            slack=SlackConfig(channels=list(slack_raw.get("channels") or [])),
             triage=TriageConfig(
                 my_addresses=list(triage_raw.get("my_addresses") or []),
                 signal_senders=list(triage_raw.get("signal_senders") or []),

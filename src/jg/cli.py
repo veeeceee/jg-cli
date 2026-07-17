@@ -63,6 +63,7 @@ def _register() -> None:
         research,
         roadmap,
         search,
+        slack,
         sprint,
         testcases,
         transition,
@@ -92,6 +93,7 @@ def _register() -> None:
     cli.add_command(reconcile.reconcile)
     cli.add_command(zoho.zoho)
     cli.add_command(gmail.gmail)
+    cli.add_command(slack.slack)
     cli.add_command(dashboard.dashboard)
 
 

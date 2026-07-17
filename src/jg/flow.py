@@ -161,6 +161,20 @@ async def gather_flow(config: Config) -> tuple[list[Incoming], list[rec.Reconcil
             if (t.status or "").lower() != "closed"
         ]
 
+    async def _slack() -> list[Incoming]:
+        from jg import slack
+
+        if not slack.is_setup():
+            return []
+        async with slack.SlackClient(config) as sc:
+            msgs = await sc.incoming()
+        # DMs/mentions/followed-channels are all things you opted into → actionable.
+        # A Jira key in a Slack message is a weak mention (no authored keys).
+        return [
+            Incoming("slack", m.channel_name, m.text, m.permalink, ref=f"{m.channel}:{m.ts}")
+            for m in msgs
+        ]
+
     async def _gmail() -> list[Incoming]:
         from jg import gmail, triage
 
@@ -188,8 +202,8 @@ async def gather_flow(config: Config) -> tuple[list[Incoming], list[rec.Reconcil
             )
         return out
 
-    items_r, review_r, zoho_r, gmail_r = await asyncio.gather(
-        rec.gather(config), _review_prs(), _zoho(), _gmail(), return_exceptions=True
+    items_r, review_r, zoho_r, gmail_r, slack_r = await asyncio.gather(
+        rec.gather(config), _review_prs(), _zoho(), _gmail(), _slack(), return_exceptions=True
     )
     items = items_r if isinstance(items_r, list) else []
     in_progress = [i for i in items if i.state in _IN_PROGRESS]
@@ -198,6 +212,7 @@ async def gather_flow(config: Config) -> tuple[list[Incoming], list[rec.Reconcil
         (review_r if isinstance(review_r, list) else [])
         + (zoho_r if isinstance(zoho_r, list) else [])
         + (gmail_r if isinstance(gmail_r, list) else [])
+        + (slack_r if isinstance(slack_r, list) else [])
     )
     return incoming, in_progress, resolving
 
@@ -336,6 +351,7 @@ class _IncomingRow(ListItem):
         "review": ("⇄", "magenta"),
         "zoho": ("⛑", "orange3"),
         "email": ("✉", "#7aa2f7"),
+        "slack": ("✳", "#89ddff"),
     }
 
     def __init__(self, item: Incoming, edge: cl.Edge | None = None, dim: bool = False):
@@ -972,7 +988,7 @@ class FlowApp(App):
         surfaced = self._surfaced()
         if not surfaced:
             return
-        kind_map = {"review": "pr", "zoho": "zoho", "email": "email"}
+        kind_map = {"review": "pr", "zoho": "zoho", "email": "email", "slack": "slack"}
         items = [
             cl.Item(
                 id=i.cid,
