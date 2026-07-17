@@ -75,11 +75,21 @@ def format_ts(ts: str) -> str:
         return ""
 
 
+_MENTION_ID = re.compile(r"<@(\w+)(?:\|[^>]+)?>")
+
+
 def clean_text(text: str, users: dict[str, str]) -> str:
-    """Slack markup → readable: <@U123> → @name, <#C1|eng> → #eng,
-    <http://x|label> → label, <http://x> → x; unescape entities."""
+    """Slack markup → readable: <@U123> → @name (inline handle if present, else
+    the resolved cache, else @someone), <#C1|eng> → #eng, <http://x|label> →
+    label, <http://x> → x; unescape entities."""
+    def _user(m: re.Match) -> str:
+        uid, label = m.group(1), m.group(2)
+        if label:  # Slack sometimes inlines the handle: <@U123|vibhu>
+            return "@" + label
+        return "@" + users.get(uid, "someone")
+
     s = text or ""
-    s = re.sub(r"<@(\w+)(?:\|[^>]+)?>", lambda m: "@" + users.get(m.group(1), "someone"), s)
+    s = re.sub(r"<@(\w+)(?:\|([^>]+))?>", _user, s)
     s = re.sub(r"<#\w+\|([^>]+)>", lambda m: "#" + m.group(1), s)
     s = re.sub(r"<(https?://[^|>]+)\|([^>]+)>", lambda m: m.group(2), s)
     s = re.sub(r"<(https?://[^>]+)>", lambda m: m.group(1), s)
@@ -140,6 +150,13 @@ class SlackClient:
             return ""
         return f"{self._team_url}archives/{channel}/p{ts.replace('.', '')}"
 
+    async def _clean(self, text: str) -> str:
+        """Resolve the user-ids mentioned *inside* the text (not just the author)
+        into the name cache, then render. So <@U123> shows who was tagged."""
+        for uid in {m.group(1) for m in _MENTION_ID.finditer(text or "")}:
+            await self._name(uid)  # cache-fills; no-op if already known
+        return clean_text(text, self._users)
+
     async def dms(self, limit: int = 5) -> list[SlackMsg]:
         conv = await self._call("conversations.list", {"types": "im", "limit": 50})
         out: list[SlackMsg] = []
@@ -151,7 +168,7 @@ class SlackClient:
                 name = await self._name(m.get("user", ""))
                 out.append(SlackMsg(
                     channel=ch["id"], channel_name=f"DM: {name}", ts=m.get("ts", ""),
-                    user_name=name, text=clean_text(m.get("text", ""), self._users),
+                    user_name=name, text=await self._clean(m.get("text", "")),
                     kind="dm", permalink=self._permalink(ch["id"], m.get("ts", "")),
                 ))
         return out
@@ -166,7 +183,7 @@ class SlackClient:
             out.append(SlackMsg(
                 channel=ch.get("id", ""), channel_name=f"#{ch.get('name', '?')}", ts=m.get("ts", ""),
                 user_name=m.get("username", "") or await self._name(m.get("user", "")),
-                text=clean_text(m.get("text", ""), self._users),
+                text=await self._clean(m.get("text", "")),
                 kind="mention", permalink=m.get("permalink", ""),
             ))
         return out
@@ -180,7 +197,7 @@ class SlackClient:
             name = await self._name(m.get("user", ""))
             out.append(SlackMsg(
                 channel=channel_id, channel_name=f"#{channel_id}", ts=m.get("ts", ""),
-                user_name=name, text=clean_text(m.get("text", ""), self._users),
+                user_name=name, text=await self._clean(m.get("text", "")),
                 kind="channel", permalink=self._permalink(channel_id, m.get("ts", "")),
             ))
         return out
@@ -196,7 +213,7 @@ class SlackClient:
             name = await self._name(m.get("user", ""))
             out.append(SlackMsg(
                 channel=channel, channel_name="", ts=m.get("ts", ""),
-                user_name=name, text=clean_text(m.get("text", ""), self._users),
+                user_name=name, text=await self._clean(m.get("text", "")),
                 kind="reply", permalink=self._permalink(channel, m.get("ts", "")),
             ))
         return out

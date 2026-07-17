@@ -15,6 +15,11 @@ def test_unknown_user_mention_is_someone():
     assert clean_text("ping <@U999>", USERS) == "ping @someone"
 
 
+def test_inline_handle_used_without_cache_lookup():
+    # Slack sometimes inlines the handle: <@U|handle> → @handle, no cache needed
+    assert clean_text("hey <@U999|priya>", {}) == "hey @priya"
+
+
 def test_channel_ref_becomes_hash_name():
     assert clean_text("see <#C123|engineering>", USERS) == "see #engineering"
 
