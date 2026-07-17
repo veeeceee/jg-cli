@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from jg.gmail import parse_message, sender_name
+import base64
+
+from jg.gmail import extract_body, parse_message, sender_name
+
+
+def _b64(s: str) -> str:
+    return base64.urlsafe_b64encode(s.encode()).decode()
 
 
 def _raw(headers: dict, *, snippet: str = "", labels=None, mid="m1", tid="t1") -> dict:
@@ -56,3 +62,36 @@ def test_sender_name_extraction():
 def test_missing_headers_are_empty_not_error():
     m = parse_message({"id": "m", "threadId": "t"})
     assert m.subject == "" and m.sender == "" and m.is_bulk is False
+
+
+def test_extract_body_prefers_text_plain():
+    payload = {
+        "mimeType": "multipart/alternative",
+        "parts": [
+            {"mimeType": "text/plain", "body": {"data": _b64("plain version")}},
+            {"mimeType": "text/html", "body": {"data": _b64("<p>html version</p>")}},
+        ],
+    }
+    assert extract_body(payload) == "plain version"
+
+
+def test_extract_body_falls_back_to_html():
+    payload = {"mimeType": "text/html", "body": {"data": _b64("<p>only html</p>")}}
+    assert extract_body(payload) == "<p>only html</p>"
+
+
+def test_extract_body_recurses_nested_multipart():
+    payload = {
+        "mimeType": "multipart/mixed",
+        "parts": [
+            {"mimeType": "multipart/alternative", "parts": [
+                {"mimeType": "text/plain", "body": {"data": _b64("nested plain")}},
+            ]},
+            {"mimeType": "application/pdf", "body": {"data": _b64("attachment")}},
+        ],
+    }
+    assert extract_body(payload) == "nested plain"
+
+
+def test_extract_body_empty_when_no_text_parts():
+    assert extract_body({"mimeType": "application/pdf", "body": {"data": _b64("x")}}) == ""

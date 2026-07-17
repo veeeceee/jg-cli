@@ -476,8 +476,68 @@ class ZohoDetailModal(ModalScreen[None]):
             webbrowser.open(self.url)
 
 
+class EmailDetailModal(ModalScreen[None]):
+    """Full email thread — cleaned bodies, oldest→newest. Read-only; `o` opens
+    Gmail to actually reply. Assess in jg, act in Gmail."""
+
+    DEFAULT_CSS = """
+    EmailDetailModal { align: center middle; background: #000000 85%; }
+    EmailDetailModal #ebox { background: #1c1c1e; border: solid #7aa2f7; width: 88; height: 82%; padding: 1 2; }
+    """
+    BINDINGS = [  # noqa: RUF012
+        Binding("escape", "close", "close"),
+        Binding("q", "close", "close"),
+        Binding("o", "browser", "open in Gmail"),
+    ]
+
+    def __init__(self, config: Config, msg_id: str, subject: str, url: str = ""):
+        super().__init__()
+        self.config = config
+        self.msg_id = msg_id
+        self.subject = subject
+        self.url = url
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="ebox"):
+            yield Static("loading…", id="ebody")
+
+    def on_mount(self) -> None:
+        self.run_worker(self._load())
+
+    async def _load(self) -> None:
+        from jg import gmail
+
+        try:
+            async with gmail.GmailClient(self.config) as gc:
+                msg, _ = await gc.full_message(self.msg_id)
+                thread = await gc.thread_messages(msg.thread_id) if msg.thread_id else [(msg, "")]
+        except Exception as e:
+            self.query_one("#ebody", Static).update(Text(f"failed to load: {type(e).__name__}", style="red"))
+            return
+
+        body = Text()
+        body.append(f"{self.subject or msg.subject}\n", style="bold #ffffff")
+        body.append(f"{len(thread)} message{'s' if len(thread) != 1 else ''} in thread\n\n", style="#565f89")
+        for m, raw in thread:
+            glyph = "→" if "SENT" in m.label_ids else "←"
+            body.append(f"{glyph} {gmail.sender_name(m.sender)}", style="#7aa2f7")
+            if m.date:
+                body.append(f"   {m.date[:31]}", style="#3d3d52")
+            body.append("\n", style="")
+            txt = _trim_quoted(_strip_html(raw)) or m.snippet
+            body.append(txt + "\n\n", style="#a9b1d6")
+        self.query_one("#ebody", Static).update(body)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def action_browser(self) -> None:
+        if self.url:
+            webbrowser.open(self.url)
+
+
 def _open_incoming(app: App, inc: Incoming, config: Config) -> None:
-    """Open a PR or Zoho ticket as a modal (browser fallback)."""
+    """Open a PR / Zoho ticket / email as a modal (browser fallback)."""
     if inc.kind == "review" and inc.url:
         repo, _, num = inc.label.rpartition("#")
         if num.isdigit():
@@ -487,6 +547,9 @@ def _open_incoming(app: App, inc: Incoming, config: Config) -> None:
             return
     if inc.kind == "zoho" and inc.ref:
         app.push_screen(ZohoDetailModal(config, inc.ref, inc.detail, inc.url))
+        return
+    if inc.kind == "email" and inc.ref:
+        app.push_screen(EmailDetailModal(config, inc.ref, inc.detail, inc.url))
         return
     if inc.url:
         webbrowser.open(inc.url)

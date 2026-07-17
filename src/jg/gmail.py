@@ -12,6 +12,7 @@ Atlassian 3LO flow in auth.py and the Zoho self-client in zoho.py.
 
 from __future__ import annotations
 
+import base64
 import http.server
 import re
 import secrets
@@ -264,6 +265,30 @@ def sender_name(raw_from: str) -> str:
     return (m.group(1).strip() if m else (raw_from or "").strip()) or "—"
 
 
+def _decode_b64url(data: str) -> str:
+    try:
+        return base64.urlsafe_b64decode(data + "===").decode("utf-8", "replace")
+    except (ValueError, TypeError):
+        return ""
+
+
+def extract_body(payload: dict) -> str:
+    """Best-effort readable body from a `format=full` MIME tree: the first
+    text/plain part, else the first text/html (caller strips it). Raw text."""
+    def walk(p: dict, want: str) -> str:
+        if p.get("mimeType") == want:
+            data = (p.get("body") or {}).get("data")
+            if data:
+                return _decode_b64url(data)
+        for sub in p.get("parts") or []:
+            found = walk(sub, want)
+            if found:
+                return found
+        return ""
+
+    return walk(payload, "text/plain") or walk(payload, "text/html")
+
+
 # ── async API client ──────────────────────────────────────────────────────────
 class GmailClient:
     _META_HEADERS = ("From", "To", "Cc", "Subject", "Date", "List-Unsubscribe", "Precedence")
@@ -312,6 +337,19 @@ class GmailClient:
             {"format": "metadata", "metadataHeaders": list(self._META_HEADERS)},
         )
         return parse_message(raw)
+
+    async def full_message(self, msg_id: str) -> tuple[Message, str]:
+        """A single message with its decoded body (format=full)."""
+        raw = await self._get(f"/messages/{msg_id}", {"format": "full"})
+        return parse_message(raw), extract_body(raw.get("payload") or {})
+
+    async def thread_messages(self, thread_id: str) -> list[tuple[Message, str]]:
+        """Every message in a thread with its decoded body — one call."""
+        data = await self._get(f"/threads/{thread_id}", {"format": "full"})
+        return [
+            (parse_message(m), extract_body(m.get("payload") or {}))
+            for m in data.get("messages", [])
+        ]
 
     async def recent(self, query: str | None = None, max_results: int | None = None) -> list[Message]:
         """The messages jg's query scopes into the incoming pile, fetched
