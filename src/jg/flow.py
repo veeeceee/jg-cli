@@ -11,6 +11,7 @@ See docs/work-model.md.
 from __future__ import annotations
 
 import asyncio
+import re
 import webbrowser
 from dataclasses import dataclass
 from typing import ClassVar
@@ -19,12 +20,16 @@ from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, ListItem, ListView, Static
 
 from jg import reconcile as rec
 from jg.config import Config
+
+
+def _strip_html(s: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", s or "")).strip()
 
 
 def _bar(done: int, total: int, width: int = 16) -> str:
@@ -64,6 +69,7 @@ class Incoming:
     label: str
     detail: str
     url: str = ""
+    ref: str = ""  # zoho ticket id (for the detail modal)
 
 
 @dataclass
@@ -109,7 +115,7 @@ async def gather_flow(config: Config) -> tuple[list[Incoming], list[rec.Reconcil
             async with zoho.ZohoClient(config) as zc:
                 for t in await zoho.find_involved(zc, config.zoho):
                     if (t.status or "").lower() != "closed":
-                        incoming.append(Incoming("zoho", f"#{t.ticket_number}", t.subject, t.web_url))
+                        incoming.append(Incoming("zoho", f"#{t.ticket_number}", t.subject, t.web_url, ref=t.id))
     except Exception:
         pass
 
@@ -220,6 +226,86 @@ class _ProjectCard(ListItem):
         super().__init__(Static(line))
 
 
+class ZohoDetailModal(ModalScreen[None]):
+    """Full Zoho support ticket — status, thread, comments. Read-only."""
+
+    DEFAULT_CSS = """
+    ZohoDetailModal { align: center middle; background: #000000 85%; }
+    ZohoDetailModal #zbox { background: #1c1c1e; border: solid #ff9e64; width: 84; height: 80%; padding: 1 2; }
+    """
+    BINDINGS = [  # noqa: RUF012
+        Binding("escape", "close", "close"),
+        Binding("q", "close", "close"),
+        Binding("o", "browser", "open in browser"),
+    ]
+
+    def __init__(self, config: Config, ticket_id: str, subject: str, url: str = ""):
+        super().__init__()
+        self.config = config
+        self.ticket_id = ticket_id
+        self.subject = subject
+        self.url = url
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="zbox"):
+            yield Static("loading…", id="zbody")
+
+    def on_mount(self) -> None:
+        self.run_worker(self._load())
+
+    async def _load(self) -> None:
+        from jg import zoho
+
+        try:
+            async with zoho.ZohoClient(self.config) as zc:
+                t = await zc.get_ticket(self.ticket_id)
+                convs = await zc.conversations(self.ticket_id)
+                comments = await zc.comments(self.ticket_id)
+        except Exception as e:
+            self.query_one("#zbody", Static).update(Text(f"failed to load: {type(e).__name__}", style="red"))
+            return
+        body = Text()
+        body.append(f"#{t.get('ticketNumber', '')}  {t.get('subject') or self.subject}\n", style="bold #ffffff")
+        contact = t.get("contact") or {}
+        who = f"{contact.get('firstName') or ''} {contact.get('lastName') or ''}".strip() or t.get("email", "")
+        body.append(f"{t.get('status', '')}  ·  {t.get('channel', '')}  ·  {who}\n\n", style="#565f89")
+        desc = _strip_html(t.get("description", ""))
+        if desc:
+            body.append(desc[:500] + "\n\n", style="#a9b1d6")
+        for c in convs[:6]:
+            frm = c.get("fromEmailAddress") or c.get("from") or ""
+            body.append(f"— {frm}\n", style="#7aa2f7")
+            body.append(_strip_html(c.get("content", "") or c.get("summary", ""))[:400] + "\n\n", style="#a9b1d6")
+        if comments:
+            body.append(f"comments ({len(comments)})\n", style="#565f89")
+            for cm in comments[:6]:
+                body.append("· " + _strip_html(cm.get("content", ""))[:300] + "\n", style="#c0caf5")
+        self.query_one("#zbody", Static).update(body)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def action_browser(self) -> None:
+        if self.url:
+            webbrowser.open(self.url)
+
+
+def _open_incoming(app: App, inc: Incoming, config: Config) -> None:
+    """Open a PR or Zoho ticket as a modal (browser fallback)."""
+    if inc.kind == "review" and inc.url:
+        repo, _, num = inc.label.rpartition("#")
+        if num.isdigit():
+            from jg.tui import PRDetailModal
+
+            app.push_screen(PRDetailModal(repo=repo, number=int(num), url=inc.url, config=config))
+            return
+    if inc.kind == "zoho" and inc.ref:
+        app.push_screen(ZohoDetailModal(config, inc.ref, inc.detail, inc.url))
+        return
+    if inc.url:
+        webbrowser.open(inc.url)
+
+
 class ProjectScreen(Screen):
     """The per-plan dashboard lens: health + board (with reconcile on cards) + PRs.
     `w` opens the project workspace (docs/research); `esc` returns to the flow."""
@@ -322,9 +408,8 @@ class ProjectScreen(Screen):
             from jg.tui import TicketDetailModal
 
             self.app.push_screen(TicketDetailModal(item.card.key, self.config), self._after)
-        elif isinstance(item, _IncomingRow) and item.item.url:
-            webbrowser.open(item.item.url)
-            self.notify(f"opened {item.item.label}", severity="information")
+        elif isinstance(item, _IncomingRow):
+            _open_incoming(self.app, item.item, self.config)
 
     def _after(self, _result: object) -> None:
         self.run_worker(self._load())
@@ -439,9 +524,8 @@ class FlowApp(App):
             from jg.tui import TicketDetailModal
 
             self.push_screen(TicketDetailModal(item.item.key, self.config), self._after_detail)
-        elif isinstance(item, _IncomingRow) and item.item.url:
-            webbrowser.open(item.item.url)
-            self.notify(f"opened {item.item.label}", severity="information")
+        elif isinstance(item, _IncomingRow):
+            _open_incoming(self, item.item, self.config)
 
     def _after_detail(self, _result: object) -> None:
         # the ticket modal may have transitioned/edited — always re-reconcile

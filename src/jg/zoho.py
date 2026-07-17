@@ -161,6 +161,14 @@ class ZohoClient:
             "/tickets/search", {"assigneeId": agent_id, "limit": limit, "sortBy": "-modifiedTime"}
         )
 
+    async def get_ticket(self, ticket_id: str) -> dict:
+        """Single ticket object (not wrapped in a data list)."""
+        assert self._client is not None
+        resp = await self._client.get(f"/tickets/{ticket_id}")
+        if resp.status_code != 200 or not resp.content:
+            return {}
+        return resp.json()
+
     async def conversations(self, ticket_id: str) -> list[dict]:
         return await self._data(f"/tickets/{ticket_id}/conversations")
 
