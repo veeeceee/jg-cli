@@ -255,5 +255,12 @@ async def gather(config: Config) -> list[ReconcileItem]:
             )
     except Exception:
         pass
+    try:
+        for p in await asyncio.to_thread(github.my_recent_merged_prs):
+            prs.append(
+                PR(branch=p.get("headRefName", ""), state="merged", title=p.get("title", ""), url=p.get("url", ""))
+            )
+    except Exception:
+        pass
 
     return reconcile(sessions, tickets, prs)

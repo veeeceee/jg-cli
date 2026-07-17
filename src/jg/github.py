@@ -132,6 +132,18 @@ def review_requested_prs(limit: int = 50) -> list[dict[str, Any]]:
     return _gql_search(f"review-requested:{user} is:open is:pr archived:false", limit)
 
 
+def my_recent_merged_prs(days: int = 14, limit: int = 30) -> list[dict[str, Any]]:
+    """Recently-merged PRs — so reconcile can spot a merged PR whose ticket is
+    still open (done-but-open). Bounded to `days` so it stays cheap."""
+    import datetime as dt
+
+    user = current_user()
+    if not user:
+        raise GhError("could not determine gh user — run `gh auth login`")
+    since = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    return _gql_search(f"author:{user} is:merged is:pr merged:>={since}", limit)
+
+
 def prs_mentioning(key: str, limit: int = 10) -> list[dict[str, Any]]:
     """Find PRs whose title or body mentions a Jira issue key."""
     return _gql_search(f"{key} in:title,body is:pr", limit)
