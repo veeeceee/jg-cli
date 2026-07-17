@@ -48,6 +48,7 @@ def _register() -> None:
         ai,
         assign,
         auth,
+        cluster,
         comment,
         create,
         dashboard,
@@ -86,6 +87,7 @@ def _register() -> None:
     cli.add_command(research.research)
     cli.add_command(roadmap.roadmap)
     cli.add_command(flow.flow)
+    cli.add_command(cluster.cluster)
     cli.add_command(reconcile.reconcile)
     cli.add_command(zoho.zoho)
     cli.add_command(dashboard.dashboard)
