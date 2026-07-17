@@ -325,6 +325,57 @@ the members were priors, and escalation is already a gate.
 - **Solo escalations skip ratification** — no emergent threadmates, no extra step,
   so friction is proportional to the value.
 
+### Build phasing: anchored walking-skeleton first
+
+**Decided.** The design above is complete; the build lands in phases so the
+invariants and the value get a live-test before the stateful machinery. Phase 1
+is anchored-only, stateless, recomputable. Emergent durable threads (the stateful
+part) and promotion are deferred.
+
+**Decided (invocation).** jg's first result-returning LLM call is a headless
+`claude -p --output-format json` subprocess, not the Anthropic SDK. It reuses the
+existing Claude CLI auth (no API key, no new keyring secret) and matches jg's
+"claude on tap" identity. Latency is acceptable because the call is async and
+never blocks the render; jg validates the JSON itself and fails soft.
+
+Phase 1 (anchored clustering):
+
+- **Sources are only what `gather_flow` already has** — Jira tickets/sessions,
+  PRs, Zoho involved-tickets. Slack and email are not wired into jg's gather yet,
+  so the full Nabla collapse (Zoho + Slack + email as one thread) is explicitly
+  *not* a phase-1 outcome — it needs emergent clustering **and** those sources.
+- **The deterministic backbone is nearly free** — jg already extracts every
+  authored edge: PR branch → key (`reconcile.extract_key`), Zoho `Associated Jira
+  Issue Keys` → key (`InvolvedTicket.jira_keys`), pane `@jg_key` → key.
+- **The LLM assigns only the loose residual** — Zoho tickets with no linked key,
+  PRs whose branch names no key — to an *existing* anchor (one of my open Jira
+  tickets) or leaves them unanchored. Bounded classification against N known
+  anchors; emergent grouping of the residual is phase 2.
+- **Invariants enforced in code, not prose.** LLM edges carry `kind="llm"` and the
+  render path has no branch that can print them as "linked" — they always show
+  reason + confidence. An LLM edge can only *assign a loose item to one anchor*; it
+  structurally cannot merge two anchors (merge is phase 2/3). The floor renders
+  first; `enrich()` runs in a worker and re-groups a beat later; a slow/absent/
+  malformed LLM run degrades to backbone-only.
+- **Caching:** `~/.cache/jg/clusters.json`, keyed on a digest of input item-ids +
+  statuses, so an unchanged flow reuses the verdict — no per-refresh call, no
+  flicker.
+
+Module shape: a pure, tested `src/jg/cluster.py` (`build_backbone`, the
+prior/asymmetry merge, edge/cluster types) plus an async `enrich()` adapter wired
+into `gather_flow` as an overlay. Tests cover authored-vs-mention weighting, the
+merge asymmetry (LLM never overrides an authored edge, never merges anchors), and
+fail-soft on malformed JSON — no live LLM in tests.
+
+Phase-1 done means: loose items the LLM assigns to a shared existing ticket render
+grouped under it with visible reason + confidence; a guess reads as `grouped: both
+mention Nabla (0.6)`, never a hard link; unanchored residual shows honestly as
+ungrouped; killing the `claude` binary still renders the flow from the backbone.
+
+Deferred to phase 2/3: emergent durable-thread objects, stickiness, manual
+re-audit, promotion + ratification at the escalate gate, Slack/email sources,
+split/merge correction UI.
+
 ## Incoming triage (second LLM investment)
 
 The incoming bucket is mostly noise — the real snapshot ran ~5 signal in ~30
@@ -390,6 +441,10 @@ Decided:
 - Promotion rides the escalate gate with membership ratified (pre-checked,
   prunable) at the gate; solo escalations skip it; pruned members return to the
   residual.
+- Clustering builds in phases: phase 1 is anchored-only, stateless, over jg's
+  existing sources (Jira/PR/Zoho); emergent durable threads and promotion follow.
+  The LLM call is a headless `claude -p --output-format json` subprocess (existing
+  Claude CLI auth, no API key), async and fail-soft.
 - Triage is governed by asymmetric error cost: when unsure, surface. It is a
   two-way filter (actionable vs suppressed-expandable), not three-way; relevant
   FYI surfaces via clustering as thread-context, not a middle inbox tier;
