@@ -11,6 +11,7 @@ See docs/work-model.md.
 from __future__ import annotations
 
 import asyncio
+import html
 import re
 import webbrowser
 from dataclasses import dataclass
@@ -29,7 +30,9 @@ from jg.config import Config
 
 
 def _strip_html(s: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", s or "")).strip()
+    s = re.sub(r"<(style|script)[^>]*>.*?</\1>", " ", s or "", flags=re.I | re.S)
+    s = re.sub(r"<[^>]+>", " ", s)
+    return re.sub(r"\s+", " ", html.unescape(s)).strip()
 
 
 # Zoho stores @mentions inline as `zsu[@user:{zuid}]zsu`. Render them human.
@@ -303,10 +306,15 @@ class ZohoDetailModal(ModalScreen[None]):
                 # interleaved. Fetching comments separately double-renders them.
                 convs = await zc.conversations(self.ticket_id)
                 ident = await zoho.resolve_identity(zc, self.config.zoho.agent_emails)
+                # Threads only carry a truncated summary in the list; fetch each
+                # full body concurrently so the whole message shows.
+                tids = [c["id"] for c in convs if c.get("type") != "comment" and c.get("id")]
+                fulls = await asyncio.gather(*(zc.thread(self.ticket_id, tid) for tid in tids))
         except Exception as e:
             self.query_one("#zbody", Static).update(Text(f"failed to load: {type(e).__name__}", style="red"))
             return
         my_zuids = {v["zuid"] for v in ident.values() if v.get("zuid")}
+        full_by_id = {f.get("id"): f for f in fulls if f}
 
         body = Text()
         body.append(f"#{t.get('ticketNumber', '')}  {t.get('subject') or self.subject}\n", style="bold #ffffff")
@@ -315,7 +323,7 @@ class ZohoDetailModal(ModalScreen[None]):
         body.append(f"{t.get('status', '')}  ·  {t.get('channel', '')}  ·  {who}\n\n", style="#565f89")
         desc = _trim_quoted(_humanize_mentions(_strip_html(t.get("description", "")), my_zuids))
         if desc:
-            body.append(desc[:600] + "\n\n", style="#a9b1d6")
+            body.append(desc + "\n\n", style="#a9b1d6")
 
         for c in convs:
             if c.get("type") == "comment":
@@ -323,12 +331,13 @@ class ZohoDetailModal(ModalScreen[None]):
                 name = cm.get("name") or f"{cm.get('firstName', '')} {cm.get('lastName', '')}".strip() or "agent"
                 body.append(f"» {name} · comment\n", style="#bb9af7")
                 txt = _humanize_mentions(_strip_html(c.get("content", "")), my_zuids)
-                body.append(txt[:400] + "\n\n", style="#c0caf5")
+                body.append(txt + "\n\n", style="#c0caf5")
             else:
                 glyph = "→" if c.get("direction") == "out" else "←"
                 body.append(f"{glyph} {_addr_name(c.get('fromEmailAddress') or c.get('from') or '')}\n", style="#7aa2f7")
-                txt = _trim_quoted(_humanize_mentions(_strip_html(c.get("content") or c.get("summary") or ""), my_zuids))
-                body.append(txt[:500] + "\n\n", style="#a9b1d6")
+                raw = full_by_id.get(c.get("id"), {}).get("content") or c.get("summary") or ""
+                txt = _trim_quoted(_humanize_mentions(_strip_html(raw), my_zuids))
+                body.append(txt + "\n\n", style="#a9b1d6")
         self.query_one("#zbody", Static).update(body)
 
     def action_close(self) -> None:

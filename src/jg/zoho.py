@@ -172,6 +172,15 @@ class ZohoClient:
     async def conversations(self, ticket_id: str) -> list[dict]:
         return await self._data(f"/tickets/{ticket_id}/conversations")
 
+    async def thread(self, ticket_id: str, thread_id: str) -> dict:
+        """Full thread body. The conversations list only carries a truncated
+        `summary` for threads; the whole message needs this per-thread fetch."""
+        assert self._client is not None
+        resp = await self._client.get(f"/tickets/{ticket_id}/threads/{thread_id}")
+        if resp.status_code != 200 or not resp.content:
+            return {}
+        return resp.json()
+
     async def comments(self, ticket_id: str) -> list[dict]:
         return await self._data(f"/tickets/{ticket_id}/comments", {"include": "mentions"})
 
