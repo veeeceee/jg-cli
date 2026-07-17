@@ -84,6 +84,7 @@ class SlackClient:
         self._client: httpx.AsyncClient | None = None
         self._users: dict[str, str] = {}   # id → display name (cache)
         self._team_url = ""
+        self.warnings: list[str] = []      # per-source failures (e.g. missing_scope)
 
     async def __aenter__(self) -> SlackClient:
         token = get_token()
@@ -179,14 +180,15 @@ class SlackClient:
         deduped by (channel, ts), newest first."""
         user_id = await self.auth_test()
 
-        async def _safe(coro):
+        async def _safe(label: str, coro):
             try:
                 return await coro
-            except SlackError:
+            except SlackError as e:
+                self.warnings.append(f"{label} unavailable: {e}")
                 return []
 
-        tasks = [_safe(self.dms()), _safe(self.mentions(user_id))]
-        tasks += [_safe(self.channel_history(cid)) for cid in self.config.channels]
+        tasks = [_safe("DMs", self.dms()), _safe("mentions", self.mentions(user_id))]
+        tasks += [_safe(f"#{cid}", self.channel_history(cid)) for cid in self.config.channels]
         results = await asyncio.gather(*tasks)
 
         seen: set[tuple[str, str]] = set()

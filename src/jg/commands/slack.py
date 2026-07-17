@@ -30,9 +30,13 @@ async def slack(ctx: click.Context) -> None:
     try:
         async with slackmod.SlackClient(config) as client:
             msgs = await client.incoming()
+            warnings = client.warnings
     except slackmod.SlackError as e:
         err.print(f"[red]✗[/] {e}")
         ctx.exit(1)
+    for w in warnings:
+        hint = " — add the scope + reinstall the app, then `jg slack auth`" if "missing_scope" in w else ""
+        err.print(f"[yellow]⚠[/] {w}{hint}")
     if not msgs:
         console.print("[dim]no recent DMs / mentions / followed-channel messages[/]")
         return
