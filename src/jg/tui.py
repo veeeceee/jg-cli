@@ -801,13 +801,15 @@ class SprintPickerModal(ModalScreen[tuple[str, int | None] | None]):
 
     BINDINGS = [Binding("escape", "dismiss", "cancel", show=False)]  # noqa: RUF012
 
-    def __init__(self, key: str, sprints: list[dict]):
+    def __init__(self, key: str, sprints: list[dict], *, title: str | None = None, hint: str | None = None):
         super().__init__()
         self.key = key
         self.sprints = sprints
+        self._title = title or f"Move {key} to…"
+        self._hint = hint or "enter to move · esc to cancel"
 
     def compose(self) -> ComposeResult:
-        yield GradientPanel(panel_title=f"Move {self.key} to…")
+        yield GradientPanel(panel_title=self._title)
 
     def on_mount(self) -> None:
         items: list[ListItem] = []
@@ -829,7 +831,7 @@ class SprintPickerModal(ModalScreen[tuple[str, int | None] | None]):
         panel = self.query_one(GradientPanel)
         panel.mount_content(
             self.lv,
-            Static("[dim]enter to move · esc to cancel[/]", markup=True, id="hint"),
+            Static(f"[dim]{self._hint}[/]", markup=True, id="hint"),
         )
         self.lv.focus()
 

@@ -188,10 +188,10 @@ async def gather_flow_anchors(config: Config) -> list[cl.Anchor]:
     ]
 
 
-async def gather_project(config: Config, project: object) -> ProjectView:
-    """Current-sprint board grouped by the real workflow columns
-    (render.GROUP_ORDER via normalize_status), reconcile state on cards, sprint
-    completion for health, and this plan's PRs.
+async def gather_project(config: Config, project: object, sprint_id: int | None = None) -> ProjectView:
+    """Board for a sprint grouped by the real workflow columns (render.GROUP_ORDER
+    via normalize_status), reconcile state on cards, sprint completion for health,
+    and this plan's PRs. `sprint_id=None` → the open sprint; otherwise that sprint.
 
     The four sources (sprint tickets, open PRs, merged PRs, sessions) are fetched
     concurrently, then the *sprint* tickets are reconciled directly — so we avoid
@@ -200,7 +200,8 @@ async def gather_project(config: Config, project: object) -> ProjectView:
     from jg.api import JiraClient
 
     base = getattr(project, "jql", "") or f"project = {config.default_project}"
-    jql = f"({base}) AND sprint in openSprints()"
+    scope = f"sprint = {sprint_id}" if sprint_id else "sprint in openSprints()"
+    jql = f"({base}) AND {scope}"
 
     async def _tickets() -> dict:
         async with JiraClient(config) as api:
@@ -465,6 +466,7 @@ class ProjectScreen(Screen):
         Binding("right", "focus_right", "→ column", show=False),
         Binding("left", "focus_left", "← column", show=False),
         Binding("b", "toggle", "sprint ⇄ backlog", show=True),
+        Binding("s", "select", "pick sprint/backlog", show=True),
         Binding("g", "jump", "jump to session", show=True),
         Binding("escape", "app.pop_screen", "back"),
         Binding("w", "workspace", "workspace"),
@@ -497,7 +499,10 @@ class ProjectScreen(Screen):
         super().__init__()
         self.project = project
         self.config = config
-        self.view = "sprint"  # "sprint" | "backlog"
+        self.view = "sprint"                 # "sprint" | "backlog"
+        self.sprint_id: int | None = None    # None → the open sprint
+        self.sprint_name = "open sprint"
+        self._sprints: list[dict] = []
 
     def compose(self) -> ComposeResult:
         yield Static("", id="proj-health")
@@ -515,6 +520,41 @@ class ProjectScreen(Screen):
     async def action_toggle(self) -> None:
         self.view = "backlog" if self.view == "sprint" else "sprint"
         await self._load()
+
+    async def action_select(self) -> None:
+        """Pick any available sprint (or the backlog) via a modal selector."""
+        board_id = getattr(self.project, "board_id", "")
+        if not board_id:
+            self.notify("no board_id for this project — add it to config", severity="warning")
+            return
+        from jg.api import JiraClient
+
+        try:
+            async with JiraClient(self.config) as api:
+                self._sprints = await api.get_sprints(board_id)
+        except Exception as e:
+            self.notify(f"sprints unavailable: {type(e).__name__}", severity="error")
+            return
+        from jg.tui import SprintPickerModal
+
+        self.app.push_screen(
+            SprintPickerModal("", self._sprints, title="View sprint or backlog", hint="enter to view · esc to cancel"),
+            self._on_pick,
+        )
+
+    def _on_pick(self, result: object) -> None:
+        if not result:
+            return
+        kind, sid = result  # ("sprint", id) | ("backlog", None)
+        if kind == "backlog":
+            self.view = "backlog"
+        else:
+            self.view = "sprint"
+            self.sprint_id = sid
+            self.sprint_name = next(
+                (s.get("name", "sprint") for s in self._sprints if int(s.get("id", -1)) == sid), "sprint"
+            )
+        self.run_worker(self._load())
 
     async def _load(self) -> None:
         from jg.tui import GROUP_GRADIENT, GradientPanel
@@ -543,7 +583,7 @@ class ProjectScreen(Screen):
             return
 
         try:
-            v = await gather_project(self.config, self.project)
+            v = await gather_project(self.config, self.project, self.sprint_id)
         except Exception as e:
             self.notify(f"load failed: {type(e).__name__}", severity="error")
             return
@@ -551,7 +591,7 @@ class ProjectScreen(Screen):
         self.query_one("#proj-health", Static).update(
             Text.assemble(
                 (f"{v.name}  ", "bold #ffffff"),
-                ("sprint  ", "bold #7aa2f7"),
+                (f"{self.sprint_name}  ", "bold #7aa2f7"),
                 (f"{_bar(v.done, v.total)} ", "#9ece6a"),
                 (f"{pct}%  ", "bold #c0caf5"),
                 (f"{v.done}/{v.total} done", "#565f89"),
