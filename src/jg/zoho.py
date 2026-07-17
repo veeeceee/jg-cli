@@ -14,6 +14,7 @@ exists, so mention/thread detection is per-candidate, not desk-wide.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from dataclasses import dataclass, field
@@ -240,64 +241,66 @@ async def find_involved(client: ZohoClient, config: ZohoConfig) -> list[Involved
     my_zuids = {v["zuid"] for v in identity.values() if v["zuid"]}
 
     # Candidate search: full email under _all (never the bare token — that pulls
-    # in unrelated people who share a first name). Union + dedup by ticket id.
-    # Plus a direct assignee query so tickets assigned to me are caught even when
-    # my email doesn't appear in their searchable text.
+    # in unrelated people who share a first name), plus zuid searches (Zoho's
+    # _all reaches comment content, and @mentions are stored as
+    # `zsu[@user:{zuid}]zsu`, so this catches "someone tagged me" tickets) and a
+    # direct assignee query. All run concurrently, then union + dedup by id.
+    searches = (
+        [client.search_tickets(e) for e in emails]
+        + [client.search_tickets(z) for z in my_zuids]
+        + [client.search_by_assignee(a) for a in my_agent_ids]
+    )
     candidates: dict[str, dict] = {}
-    for email in emails:
-        for t in await client.search_tickets(email):
-            candidates[str(t.get("id"))] = t
-    # Zoho's _all index reaches comment content, and @mentions are stored as
-    # `zsu[@user:{zuid}]zsu` — so searching the zuid catches "someone tagged me
-    # to look at this" tickets that have neither my email nor my assignment.
-    for zuid in my_zuids:
-        for t in await client.search_tickets(zuid):
-            candidates.setdefault(str(t.get("id")), t)
-    for agent_id in my_agent_ids:
-        for t in await client.search_by_assignee(agent_id):
-            candidates.setdefault(str(t.get("id")), t)
+    for result in await asyncio.gather(*searches, return_exceptions=True):
+        if isinstance(result, list):
+            for t in result:
+                candidates.setdefault(str(t.get("id")), t)
 
-    involved: list[InvolvedTicket] = []
-    for tid, t in candidates.items():
+    # Per-candidate classification needs conversations + comments; run candidates
+    # concurrently (was the serial hot spot), bounded so we don't hammer Zoho.
+    sem = asyncio.Semaphore(6)
+
+    async def _classify(tid: str, t: dict) -> InvolvedTicket | None:
+        async with sem:
+            convs_r, comments_r = await asyncio.gather(
+                client.conversations(tid), client.comments(tid), return_exceptions=True
+            )
+        convs = convs_r if isinstance(convs_r, list) else []
+        comments = comments_r if isinstance(comments_r, list) else []
+
         types: list[str] = []
         if str(t.get("assigneeId") or "") in my_agent_ids:
             types.append("ASSIGNED")
-
-        convs = await client.conversations(tid)
         if any(any(e in _thread_addresses(c) for e in email_lc) for c in convs):
             types.append("THREAD")
-
-        comments = await client.comments(tid)
         if my_zuids and any(
             any(f"@user:{z}" in (cm.get("content") or "") for z in my_zuids) for cm in comments
         ):
             types.append("MENTIONED")
-
         # Body/subject/thread contains my exact email (not just the fuzzy token).
         blob = f"{t.get('subject', '')} {t.get('description') or ''}".lower()
         blob += " " + " ".join(_thread_addresses(c) for c in convs)
         if not types and any(e in blob for e in email_lc):
             types.append("BODY")
-
-        # Drop tokenizer false-positives: matched `_all` fuzzily but no real
+        # Drop tokenizer false-positives: fuzzy `_all` match with no real
         # involvement (not assigned/threaded/mentioned, exact email absent).
         if not types:
-            continue
+            return None
 
-        assignee = (t.get("assignee") or {})
-        involved.append(
-            InvolvedTicket(
-                id=tid,
-                ticket_number=str(t.get("ticketNumber", "")),
-                subject=t.get("subject", ""),
-                status=t.get("status", ""),
-                assignee=f"{assignee.get('firstName', '') or ''} {assignee.get('lastName', '') or ''}".strip()
-                or "—",
-                web_url=t.get("webUrl", ""),
-                involvement=types,
-                jira_keys=_jira_keys(t),
-                modified=t.get("modifiedTime", ""),
-            )
+        assignee = t.get("assignee") or {}
+        return InvolvedTicket(
+            id=tid,
+            ticket_number=str(t.get("ticketNumber", "")),
+            subject=t.get("subject", ""),
+            status=t.get("status", ""),
+            assignee=f"{assignee.get('firstName', '') or ''} {assignee.get('lastName', '') or ''}".strip() or "—",
+            web_url=t.get("webUrl", ""),
+            involvement=types,
+            jira_keys=_jira_keys(t),
+            modified=t.get("modifiedTime", ""),
         )
+
+    results = await asyncio.gather(*(_classify(tid, t) for tid, t in candidates.items()))
+    involved = [r for r in results if r is not None]
     involved.sort(key=lambda i: i.modified, reverse=True)
     return involved

@@ -128,38 +128,44 @@ class ProjectView:
 
 
 async def gather_flow(config: Config) -> tuple[list[Incoming], list[rec.ReconcileItem], list[rec.ReconcileItem]]:
-    """(incoming, in_progress, resolving) for my work. Each source fails soft."""
-    items = await rec.gather(config)
-    in_progress = [i for i in items if i.state in _IN_PROGRESS]
-    resolving = [i for i in items if i.state in _RESOLVING]
+    """(incoming, in_progress, resolving) for my work. The three sources
+    (reconcile, review-requested PRs, Zoho involvement) are independent and run
+    concurrently — Zoho dominates, so serializing them made the whole load wait
+    on it. Each source fails soft."""
 
-    incoming: list[Incoming] = []
-    try:
+    async def _review_prs() -> list[Incoming]:
         from jg import github
 
+        out: list[Incoming] = []
         for pr in await asyncio.to_thread(github.review_requested_prs):
             repo = (pr.get("repository") or {}).get("nameWithOwner", "?")
             key = rec.extract_key(pr.get("headRefName", "") or "") or rec.extract_key(pr.get("title", "") or "")
-            incoming.append(
+            out.append(
                 Incoming("review", f"{repo}#{pr.get('number')}", pr.get("title", ""), pr.get("url", ""),
                          keys=[key] if key else [])
             )
-    except Exception:
-        pass
-    try:
+        return out
+
+    async def _zoho() -> list[Incoming]:
         from jg import zoho
 
-        if config.zoho.is_setup:
-            async with zoho.ZohoClient(config) as zc:
-                for t in await zoho.find_involved(zc, config.zoho):
-                    if (t.status or "").lower() != "closed":
-                        incoming.append(
-                            Incoming("zoho", f"#{t.ticket_number}", t.subject, t.web_url, ref=t.id,
-                                     keys=list(t.jira_keys))
-                        )
-    except Exception:
-        pass
+        if not config.zoho.is_setup:
+            return []
+        async with zoho.ZohoClient(config) as zc:
+            involved = await zoho.find_involved(zc, config.zoho)
+        return [
+            Incoming("zoho", f"#{t.ticket_number}", t.subject, t.web_url, ref=t.id, keys=list(t.jira_keys))
+            for t in involved
+            if (t.status or "").lower() != "closed"
+        ]
 
+    items_r, review_r, zoho_r = await asyncio.gather(
+        rec.gather(config), _review_prs(), _zoho(), return_exceptions=True
+    )
+    items = items_r if isinstance(items_r, list) else []
+    in_progress = [i for i in items if i.state in _IN_PROGRESS]
+    resolving = [i for i in items if i.state in _RESOLVING]
+    incoming = (review_r if isinstance(review_r, list) else []) + (zoho_r if isinstance(zoho_r, list) else [])
     return incoming, in_progress, resolving
 
 
