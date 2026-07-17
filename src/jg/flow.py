@@ -87,9 +87,7 @@ class ProjectView:
     name: str
     done: int
     total: int
-    todo: list[Card]
-    inprog: list[Card]
-    resolving: list[Card]
+    columns: list[tuple[str, list[Card]]]  # (status group, cards) in GROUP_ORDER — current sprint
     prs: list[Incoming]
 
 
@@ -123,11 +121,14 @@ async def gather_flow(config: Config) -> tuple[list[Incoming], list[rec.Reconcil
 
 
 async def gather_project(config: Config, project: object) -> ProjectView:
-    """The per-plan dashboard data: board (To-Do / In-Progress / Resolving) with
-    reconcile state on cards, done-count for health, and this plan's PRs."""
+    """Current-sprint board grouped by the real workflow columns
+    (render.GROUP_ORDER via normalize_status), reconcile state on cards, sprint
+    completion for health, and this plan's PRs."""
+    from jg import render
     from jg.api import JiraClient
 
-    jql = getattr(project, "jql", "") or f"project = {config.default_project}"
+    base = getattr(project, "jql", "") or f"project = {config.default_project}"
+    jql = f"({base}) AND sprint in openSprints()"
     tickets: list[dict] = []
     try:
         async with JiraClient(config) as api:
@@ -153,9 +154,7 @@ async def gather_project(config: Config, project: object) -> ProjectView:
     pr_keys = {rec.extract_key(p.get("headRefName", "") or p.get("title", "")) for p in prs_raw}
     pr_keys.discard(None)
 
-    todo: list[Card] = []
-    inprog: list[Card] = []
-    resolving: list[Card] = []
+    groups: dict[str, list[Card]] = {}
     done = 0
     total = 0
     for iss in tickets:
@@ -167,21 +166,37 @@ async def gather_project(config: Config, project: object) -> ProjectView:
         total += 1
         if cat == "Done":
             done += 1
-            continue
         item = item_by_key.get(key)
         card = Card(key, f.get("summary", "") or "", status, item.state if item else None, key in pr_keys, item)
-        if cat == "To Do":
-            todo.append(card)
-        elif rec.is_resolving_status(status):
-            resolving.append(card)
-        else:
-            inprog.append(card)
+        groups.setdefault(render.normalize_status(status), []).append(card)
+
+    ordered = [g for g in render.GROUP_ORDER if g in groups] + [g for g in groups if g not in render.GROUP_ORDER]
+    columns = [(g, groups[g]) for g in ordered]
 
     prs = [
         Incoming("review", f"{(p.get('repository') or {}).get('nameWithOwner', '?')}#{p.get('number')}", p.get("title", ""), p.get("url", ""))
         for p in prs_raw
     ]
-    return ProjectView(getattr(project, "name", "project"), done, total, todo, inprog, resolving, prs)
+    return ProjectView(getattr(project, "name", "project"), done, total, columns, prs)
+
+
+async def gather_backlog(config: Config, project: object) -> list[Card]:
+    """The plan's ranked backlog — not-done tickets outside the open sprint."""
+    from jg.api import JiraClient
+
+    base = getattr(project, "jql", "") or f"project = {config.default_project}"
+    jql = f"({base}) AND statusCategory != Done AND (sprint is EMPTY OR sprint not in openSprints()) ORDER BY priority DESC, created ASC"
+    try:
+        async with JiraClient(config) as api:
+            data = await api.search_jql(jql, fields=["summary", "status", "priority"], max_results=200)
+    except Exception:
+        return []
+    out: list[Card] = []
+    for iss in data.get("issues", []):
+        f = iss.get("fields") or {}
+        st = f.get("status") or {}
+        out.append(Card(iss.get("key", ""), f.get("summary", "") or "", st.get("name", "")))
+    return out
 
 
 class _Header(ListItem):
@@ -306,18 +321,26 @@ def _open_incoming(app: App, inc: Incoming, config: Config) -> None:
         webbrowser.open(inc.url)
 
 
+def _col_id(group: str) -> str:
+    """Stable DOM id for a status-group column."""
+    return "c-" + re.sub(r"[^a-z0-9]+", "-", group.lower()).strip("-")
+
+
 class ProjectScreen(Screen):
-    """The per-plan dashboard lens: health + board (with reconcile on cards) + PRs.
-    `w` opens the project workspace (docs/research); `esc` returns to the flow."""
+    """The per-plan dashboard lens: health + current-sprint board (real workflow
+    columns, reconcile on cards) + PRs. `b` toggles to the ranked backlog list.
+    `w` opens the project workspace; `esc` returns to the flow."""
 
     DEFAULT_CSS = """
     ProjectScreen { background: #16161e; }
     #proj-health { height: 1; padding: 0 1; }
     #proj-board { height: 1fr; }
-    .pcol { width: 1fr; border-right: solid #2a2e42; }
-    .pcol .ch { color: #565f89; padding: 0 1; height: 1; }
+    .pcol { width: 1fr; min-width: 20; border-right: solid #2a2e42; }
+    .pcol .ch { padding: 0 1; height: 1; }
     .pcol ListView { background: #16161e; }
     .pcol ListView > ListItem { background: #16161e; padding: 0 1; }
+    #proj-backlog { background: #16161e; }
+    #proj-backlog > ListItem { background: #16161e; padding: 0 1; }
     #proj-prs-h { color: #565f89; padding: 0 1; height: 1; }
     #proj-prs { height: auto; max-height: 6; background: #16161e; }
     #proj-prs > ListItem { background: #16161e; padding: 0; }
@@ -327,6 +350,7 @@ class ProjectScreen(Screen):
         Binding("h", "focus_left", "← column", show=False),
         Binding("right", "focus_right", "→ column", show=False),
         Binding("left", "focus_left", "← column", show=False),
+        Binding("b", "toggle", "sprint ⇄ backlog", show=True),
         Binding("g", "jump", "jump to session", show=True),
         Binding("escape", "app.pop_screen", "back"),
         Binding("w", "workspace", "workspace"),
@@ -334,27 +358,36 @@ class ProjectScreen(Screen):
         Binding("q", "quit", "quit"),
     ]
 
-    _COLS = (("todo", "TO DO"), ("inprog", "IN PROGRESS"), ("resolving", "RESOLVING"))
-    _PANELS: ClassVar[list[str]] = ["#c-todo", "#c-inprog", "#c-resolving", "#proj-prs"]
+    def _panels(self) -> list[ListView]:
+        """Focusable lists in DOM order — board columns (or backlog) then PRs."""
+        board = self.query_one("#proj-board", Horizontal)
+        lists = list(board.query(ListView))
+        lists.extend(self.query("#proj-prs").results(ListView))
+        return lists
+
+    def _shift(self, delta: int) -> None:
+        panels = self._panels()
+        if not panels:
+            return
+        cur = self.app.focused
+        idx = panels.index(cur) if cur in panels else 0
+        panels[(idx + delta) % len(panels)].focus()
 
     def action_focus_left(self) -> None:
-        _shift_focus(self, self._PANELS, -1)
+        self._shift(-1)
 
     def action_focus_right(self) -> None:
-        _shift_focus(self, self._PANELS, 1)
+        self._shift(1)
 
     def __init__(self, project: object, config: Config):
         super().__init__()
         self.project = project
         self.config = config
+        self.view = "sprint"  # "sprint" | "backlog"
 
     def compose(self) -> ComposeResult:
         yield Static("", id="proj-health")
-        with Horizontal(id="proj-board"):
-            for col, name in self._COLS:
-                with Vertical(classes="pcol"):
-                    yield Static(name, id=f"h-{col}", classes="ch")
-                    yield ListView(id=f"c-{col}")
+        yield Horizontal(id="proj-board")
         yield Static("PRs", id="proj-prs-h")
         yield ListView(id="proj-prs")
         yield Footer()
@@ -365,7 +398,36 @@ class ProjectScreen(Screen):
     async def action_reload(self) -> None:
         await self._load()
 
+    async def action_toggle(self) -> None:
+        self.view = "backlog" if self.view == "sprint" else "sprint"
+        await self._load()
+
     async def _load(self) -> None:
+        from jg import render
+
+        board = self.query_one("#proj-board", Horizontal)
+        await board.remove_children()
+
+        if self.view == "backlog":
+            try:
+                cards = await gather_backlog(self.config, self.project)
+            except Exception as e:
+                self.notify(f"load failed: {type(e).__name__}", severity="error")
+                return
+            self.query_one("#proj-health", Static).update(
+                Text.assemble(
+                    (f"{getattr(self.project, 'name', 'project')}  ", "bold #ffffff"),
+                    ("backlog  ", "bold #ff9e64"),
+                    (f"{len(cards)} items", "#565f89"),
+                )
+            )
+            lv = ListView(id="proj-backlog")
+            await board.mount(lv)
+            for c in cards:
+                await lv.append(_ProjectCard(c))
+            lv.focus()
+            return
+
         try:
             v = await gather_project(self.config, self.project)
         except Exception as e:
@@ -375,26 +437,30 @@ class ProjectScreen(Screen):
         self.query_one("#proj-health", Static).update(
             Text.assemble(
                 (f"{v.name}  ", "bold #ffffff"),
+                ("sprint  ", "bold #7aa2f7"),
                 (f"{_bar(v.done, v.total)} ", "#9ece6a"),
                 (f"{pct}%  ", "bold #c0caf5"),
                 (f"{v.done}/{v.total} done", "#565f89"),
             )
         )
-        first_filled: str | None = None
-        for (col, name), cards in zip(self._COLS, (v.todo, v.inprog, v.resolving), strict=True):
-            self.query_one(f"#h-{col}", Static).update(Text(f"{name}  {len(cards)}", style="#565f89"))
-            lv = self.query_one(f"#c-{col}", ListView)
-            await lv.clear()
+        first_filled: ListView | None = None
+        for group, cards in v.columns:
+            col = Vertical(classes="pcol")
+            await board.mount(col)
+            style = render.GROUP_STYLE.get(group, "white")
+            await col.mount(Static(Text(f"{group}  {len(cards)}", style=style), classes="ch"))
+            lv = ListView(id=_col_id(group))
+            await col.mount(lv)
             for c in cards:
                 await lv.append(_ProjectCard(c))
             if cards and first_filled is None:
-                first_filled = f"#c-{col}"
+                first_filled = lv
         prs = self.query_one("#proj-prs", ListView)
         await prs.clear()
         for p in v.prs:
             await prs.append(_IncomingRow(p))
-        if first_filled:
-            self.query_one(first_filled, ListView).focus()
+        if first_filled is not None:
+            first_filled.focus()
 
     def action_workspace(self) -> None:
         from jg.tui import ProjectDetailModal
