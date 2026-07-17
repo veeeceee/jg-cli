@@ -14,7 +14,7 @@ import asyncio
 import html
 import re
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar
 
 from rich.text import Text
@@ -25,6 +25,7 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, ListItem, ListView, Static
 
+from jg import cluster as cl
 from jg import reconcile as rec
 from jg.config import Config
 from jg.themes import ALL_THEMES
@@ -99,6 +100,12 @@ class Incoming:
     detail: str
     url: str = ""
     ref: str = ""  # zoho ticket id (for the detail modal)
+    keys: list[str] = field(default_factory=list)  # authored Jira links (branch / Zoho field)
+
+    @property
+    def cid(self) -> str:
+        """Stable id used to match cluster results back to this row."""
+        return f"{self.kind}:{self.ref or self.label}"
 
 
 @dataclass
@@ -132,7 +139,11 @@ async def gather_flow(config: Config) -> tuple[list[Incoming], list[rec.Reconcil
 
         for pr in await asyncio.to_thread(github.review_requested_prs):
             repo = (pr.get("repository") or {}).get("nameWithOwner", "?")
-            incoming.append(Incoming("review", f"{repo}#{pr.get('number')}", pr.get("title", ""), pr.get("url", "")))
+            key = rec.extract_key(pr.get("headRefName", "") or "") or rec.extract_key(pr.get("title", "") or "")
+            incoming.append(
+                Incoming("review", f"{repo}#{pr.get('number')}", pr.get("title", ""), pr.get("url", ""),
+                         keys=[key] if key else [])
+            )
     except Exception:
         pass
     try:
@@ -142,11 +153,33 @@ async def gather_flow(config: Config) -> tuple[list[Incoming], list[rec.Reconcil
             async with zoho.ZohoClient(config) as zc:
                 for t in await zoho.find_involved(zc, config.zoho):
                     if (t.status or "").lower() != "closed":
-                        incoming.append(Incoming("zoho", f"#{t.ticket_number}", t.subject, t.web_url, ref=t.id))
+                        incoming.append(
+                            Incoming("zoho", f"#{t.ticket_number}", t.subject, t.web_url, ref=t.id,
+                                     keys=list(t.jira_keys))
+                        )
     except Exception:
         pass
 
     return incoming, in_progress, resolving
+
+
+async def gather_flow_anchors(config: Config) -> list[cl.Anchor]:
+    """My open Jira tickets, as clustering anchors for the incoming pile."""
+    from jg.api import JiraClient
+
+    try:
+        async with JiraClient(config) as api:
+            data = await api.search_jql(
+                "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC",
+                fields=["summary"],
+                max_results=100,
+            )
+    except Exception:
+        return []
+    return [
+        cl.Anchor(i.get("key", ""), (i.get("fields") or {}).get("summary", "") or "")
+        for i in data.get("issues", [])
+    ]
 
 
 async def gather_project(config: Config, project: object) -> ProjectView:
@@ -233,14 +266,29 @@ class _Header(ListItem):
         super().__init__(Static(Text(text, style="bold #565f89")))
 
 
+class _ClusterHead(ListItem):
+    """Sub-header inside INCOMING: the Jira anchor a group of items belongs to."""
+    def __init__(self, anchor_key: str, summary: str):
+        t = Text("  ↳ ", style="#7dcfff")
+        t.append(f"{anchor_key} ", style="bold #7dcfff")
+        t.append(summary[:46], style="#565f89")
+        super().__init__(Static(t))
+
+
 class _IncomingRow(ListItem):
-    def __init__(self, item: Incoming):
+    def __init__(self, item: Incoming, edge: cl.Edge | None = None):
         self.item = item
         glyph, style = ("⇄", "magenta") if item.kind == "review" else ("⛑", "orange3")
-        line = Text("▎ ", style=style)
+        # nested under a cluster head → indent + dim edge bar; else the normal bar
+        line = Text("      " if edge else "▎ ", style="#3d3d52" if edge else style)
         line.append(f"{glyph} ", style=style)
         line.append(f"{item.label:<18}", style="bold #c0caf5")
-        line.append(item.detail[:58], style="#a9b1d6")
+        line.append(item.detail[: 40 if edge else 58], style="#a9b1d6")
+        if edge is not None:
+            soft = edge.kind == cl.EdgeKind.LLM
+            line.append(f"  {'~' if soft else '='}", style="#e0af68" if soft else "#9ece6a")
+            if soft:
+                line.append(f"{edge.confidence:.1f}", style="#565f89")
         super().__init__(Static(line))
 
 
@@ -572,6 +620,9 @@ class FlowApp(App):
     def __init__(self, config: Config):
         super().__init__()
         self.config = config
+        self._incoming: list[Incoming] = []
+        self._ip: list[rec.ReconcileItem] = []
+        self._res: list[rec.ReconcileItem] = []
 
     def action_focus_left(self) -> None:
         _shift_focus(self, self._PANELS, -1)
@@ -618,19 +669,69 @@ class FlowApp(App):
         except Exception as e:
             self.notify(f"refresh failed: {type(e).__name__}", severity="error")
             return
+        self._incoming, self._ip, self._res = incoming, in_progress, resolving
+        await self._render_flow()                    # deterministic floor — instant
+        self.run_worker(self._cluster_overlay())     # LLM grouping — arrives later
+
+    async def _render_flow(
+        self, clusters: list[cl.Cluster] | None = None, residual: list[cl.Item] | None = None
+    ) -> None:
+        """Render the flow list. Floor: incoming flat. Overlay: incoming grouped
+        under cluster anchors, residual flat. In-progress/resolving unchanged."""
         lv = self.query_one("#flow", ListView)
         await lv.clear()
-        await lv.append(_Header(f"INCOMING ({len(incoming)})"))
-        for i in incoming:
-            await lv.append(_IncomingRow(i))
-        await lv.append(_Header(f"IN PROGRESS ({len(in_progress)})"))
-        for i in in_progress:
+        await lv.append(_Header(f"INCOMING ({len(self._incoming)})"))
+        if clusters is None:
+            for i in self._incoming:
+                await lv.append(_IncomingRow(i))
+        else:
+            by_cid = {i.cid: i for i in self._incoming}
+            for c in clusters:
+                await lv.append(_ClusterHead(c.anchor_key, c.summary))
+                for m in c.members:
+                    inc = by_cid.get(m.id)
+                    if inc is not None:
+                        await lv.append(_IncomingRow(inc, edge=m.edge))
+            for it in residual or []:
+                inc = by_cid.get(it.id)
+                if inc is not None:
+                    await lv.append(_IncomingRow(inc))
+        await lv.append(_Header(f"IN PROGRESS ({len(self._ip)})"))
+        for i in self._ip:
             await lv.append(_FlowRow(i))
-        await lv.append(_Header(f"RESOLVING ({len(resolving)})"))
-        for i in resolving:
+        await lv.append(_Header(f"RESOLVING ({len(self._res)})"))
+        for i in self._res:
             await lv.append(_FlowRow(i))
         if len(lv.children):
             lv.index = 0
+
+    async def _cluster_overlay(self) -> None:
+        """Async LLM grouping of the incoming pile. Fail-soft: on any problem or
+        empty result the deterministic floor stands untouched."""
+        incoming = self._incoming
+        if not incoming:
+            return
+        items = [
+            cl.Item(
+                id=i.cid,
+                kind="pr" if i.kind == "review" else "zoho",
+                label=i.label,
+                detail=i.detail,
+                linked_keys=i.keys,
+            )
+            for i in incoming
+        ]
+        anchors = await gather_flow_anchors(self.config)
+        if not anchors:
+            return
+        try:
+            result = await cl.enrich(items, anchors, claude_path=self.config.ai.claude_path)
+        except Exception:
+            return
+        # Only re-render if the incoming pile hasn't changed under us, and only
+        # if the LLM actually grouped something.
+        if result.clusters and self._incoming is incoming:
+            await self._render_flow(result.clusters, result.residual)
 
     @on(ListView.Selected)
     def _selected(self, ev: ListView.Selected) -> None:
