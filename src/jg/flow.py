@@ -32,6 +32,31 @@ def _strip_html(s: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", s or "")).strip()
 
 
+# Zoho stores @mentions inline as `zsu[@user:{zuid}]zsu`. Render them human.
+_MENTION_RE = re.compile(r"zsu\[@user:(\d+)\]zsu")
+# Start of a quoted reply-chain / signature block appended to a Desk email.
+_QUOTE_RE = re.compile(r"From:\s|Sent:\s|-{2,}\s*Original Message|On .{0,80}? wrote:", re.I)
+
+
+def _humanize_mentions(s: str, my_zuids: set[str]) -> str:
+    return _MENTION_RE.sub(lambda m: "@you" if m.group(1) in my_zuids else "@mention", s or "")
+
+
+def _trim_quoted(s: str) -> str:
+    """Drop a trailing quoted reply-chain so only the new message shows.
+    Conservative: only trims when real content precedes the quote marker."""
+    m = _QUOTE_RE.search(s or "")
+    if m and m.start() > 40:
+        return s[: m.start()].rstrip()
+    return s or ""
+
+
+def _addr_name(addr: str) -> str:
+    """`"Heather Duplessis"<heather@x.com>` → `Heather Duplessis`."""
+    m = re.match(r'\s*"?([^"<]+?)"?\s*<', addr or "")
+    return (m.group(1).strip() if m else (addr or "").strip()) or "—"
+
+
 def _bar(done: int, total: int, width: int = 16) -> str:
     filled = round(width * done / total) if total else 0
     return "█" * filled + "░" * (width - filled)
@@ -274,27 +299,36 @@ class ZohoDetailModal(ModalScreen[None]):
         try:
             async with zoho.ZohoClient(self.config) as zc:
                 t = await zc.get_ticket(self.ticket_id)
+                # `conversations` is the unified timeline — threads AND comments
+                # interleaved. Fetching comments separately double-renders them.
                 convs = await zc.conversations(self.ticket_id)
-                comments = await zc.comments(self.ticket_id)
+                ident = await zoho.resolve_identity(zc, self.config.zoho.agent_emails)
         except Exception as e:
             self.query_one("#zbody", Static).update(Text(f"failed to load: {type(e).__name__}", style="red"))
             return
+        my_zuids = {v["zuid"] for v in ident.values() if v.get("zuid")}
+
         body = Text()
         body.append(f"#{t.get('ticketNumber', '')}  {t.get('subject') or self.subject}\n", style="bold #ffffff")
         contact = t.get("contact") or {}
         who = f"{contact.get('firstName') or ''} {contact.get('lastName') or ''}".strip() or t.get("email", "")
         body.append(f"{t.get('status', '')}  ·  {t.get('channel', '')}  ·  {who}\n\n", style="#565f89")
-        desc = _strip_html(t.get("description", ""))
+        desc = _trim_quoted(_humanize_mentions(_strip_html(t.get("description", "")), my_zuids))
         if desc:
-            body.append(desc[:500] + "\n\n", style="#a9b1d6")
-        for c in convs[:6]:
-            frm = c.get("fromEmailAddress") or c.get("from") or ""
-            body.append(f"— {frm}\n", style="#7aa2f7")
-            body.append(_strip_html(c.get("content", "") or c.get("summary", ""))[:400] + "\n\n", style="#a9b1d6")
-        if comments:
-            body.append(f"comments ({len(comments)})\n", style="#565f89")
-            for cm in comments[:6]:
-                body.append("· " + _strip_html(cm.get("content", ""))[:300] + "\n", style="#c0caf5")
+            body.append(desc[:600] + "\n\n", style="#a9b1d6")
+
+        for c in convs:
+            if c.get("type") == "comment":
+                cm = c.get("commenter") or {}
+                name = cm.get("name") or f"{cm.get('firstName', '')} {cm.get('lastName', '')}".strip() or "agent"
+                body.append(f"» {name} · comment\n", style="#bb9af7")
+                txt = _humanize_mentions(_strip_html(c.get("content", "")), my_zuids)
+                body.append(txt[:400] + "\n\n", style="#c0caf5")
+            else:
+                glyph = "→" if c.get("direction") == "out" else "←"
+                body.append(f"{glyph} {_addr_name(c.get('fromEmailAddress') or c.get('from') or '')}\n", style="#7aa2f7")
+                txt = _trim_quoted(_humanize_mentions(_strip_html(c.get("content") or c.get("summary") or ""), my_zuids))
+                body.append(txt[:500] + "\n\n", style="#a9b1d6")
         self.query_one("#zbody", Static).update(body)
 
     def action_close(self) -> None:
