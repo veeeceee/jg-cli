@@ -15,6 +15,7 @@ exists, so mention/thread detection is per-candidate, not desk-wide.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import re
 import time
 from dataclasses import dataclass, field
@@ -231,10 +232,11 @@ def _jira_keys(t: dict) -> list[str]:
     return _JIRA_KEY_RE.findall(str(raw)) if raw else []
 
 
-async def find_involved(client: ZohoClient, config: ZohoConfig) -> list[InvolvedTicket]:
+async def find_involved(client: ZohoClient, config: ZohoConfig, since_days: int = 14) -> list[InvolvedTicket]:
     emails = [e for e in config.agent_emails if e]
     if not emails:
         return []
+    cutoff = (dt.date.today() - dt.timedelta(days=since_days)).isoformat()  # YYYY-MM-DD
     email_lc = [e.lower() for e in emails]
     identity = await resolve_identity(client, emails)
     my_agent_ids = {v["agentId"] for v in identity.values() if v["agentId"]}
@@ -254,6 +256,11 @@ async def find_involved(client: ZohoClient, config: ZohoConfig) -> list[Involved
     for result in await asyncio.gather(*searches, return_exceptions=True):
         if isinstance(result, list):
             for t in result:
+                # Bound to the recency window — Zoho search has no cutoff, so a
+                # ticket last touched months ago would otherwise stay "involved".
+                modified = (t.get("modifiedTime") or "")[:10]
+                if modified and modified < cutoff:
+                    continue
                 candidates.setdefault(str(t.get("id")), t)
 
     # Per-candidate classification needs conversations + comments; run candidates

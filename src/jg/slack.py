@@ -227,9 +227,14 @@ class SlackClient:
             ))
         return out
 
-    async def incoming(self) -> list[SlackMsg]:
+    async def incoming(self, since_days: int = 14) -> list[SlackMsg]:
         """DMs + @mentions + followed-channel messages, concurrent + fail-soft,
-        deduped by (channel, ts), newest first."""
+        deduped by (channel, ts), newest first. Bounded to the last `since_days`
+        — search.messages and history have no server-side recency cutoff, so a
+        months-old mention would otherwise leak into the inbox."""
+        import datetime as dt
+
+        cutoff = (dt.datetime.now() - dt.timedelta(days=since_days)).timestamp()
         user_id = await self.auth_test()
 
         async def _safe(label: str, coro):
@@ -247,6 +252,11 @@ class SlackClient:
         merged: list[SlackMsg] = []
         for group in results:
             for msg in group:
+                try:
+                    if float(msg.ts) < cutoff:
+                        continue  # older than the window — not current inbox
+                except ValueError:
+                    pass
                 key = (msg.channel, msg.ts)
                 if key not in seen:
                     seen.add(key)

@@ -73,7 +73,9 @@ async def test_resolve_identity():
 async def test_find_involved_classifies_and_drops_false_positives():
     client = _mk_client()
     cfg = ZohoConfig(agent_emails=EMAILS)
-    result = await zoho.find_involved(client, cfg)
+    # since_days huge: this test is about classification/dedup, not the recency
+    # window (the mock modifiedTimes are fixed dates that age past any cutoff).
+    result = await zoho.find_involved(client, cfg, since_days=100_000)
     by_id = {t.id: t.involvement for t in result}
 
     assert by_id["2"] == ["ASSIGNED"]          # assigneeId matches my agent
