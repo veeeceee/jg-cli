@@ -994,7 +994,7 @@ class _LabelsEdit(ModalScreen[list[str] | None]):
             self.dismiss(new)
 
 
-class TicketDetailModal(ModalScreen[None]):
+class TicketDetailModal(ModalScreen[bool]):
     """Editable ticket detail. Same actions as the dashboard, scoped to one issue."""
 
     DEFAULT_CSS = """
@@ -1101,6 +1101,7 @@ class TicketDetailModal(ModalScreen[None]):
         self.config = config
         self.issue: dict[str, Any] | None = None
         self.body_scroll: VerticalScroll | None = None
+        self._dirty = False  # set when a mutation happens; drives conditional reload on close
 
     def compose(self) -> ComposeResult:
         # No panel_title — content title row already shows the key + summary.
@@ -1112,7 +1113,7 @@ class TicketDetailModal(ModalScreen[None]):
         self.body_scroll = VerticalScroll()
         self._footer_static = Static(self._footer_text(), id="footer", markup=True)
         panel.mount_content(self._title_static, self.body_scroll, self._footer_static)
-        await self._reload()
+        await self._reload(mark_dirty=False)  # initial load isn't a mutation
 
     def _footer_text(self) -> str:
         """Two grouped lines — edit actions on top, view actions below. The
@@ -1133,7 +1134,12 @@ class TicketDetailModal(ModalScreen[None]):
         )
         return f"[dim]{edit}\n{view}[/]"
 
-    async def _reload(self) -> None:
+    async def _reload(self, mark_dirty: bool = True) -> None:
+        # Every mutation action calls _reload() (default → dirty); only the mount
+        # and the manual `r` refresh pass mark_dirty=False. On close we reload the
+        # board only if something actually changed.
+        if mark_dirty:
+            self._dirty = True
         sp_field = self.config.fields.story_points
         fields = [
             "summary", "description", "status", "priority", "issuetype",
@@ -1304,11 +1310,11 @@ class TicketDetailModal(ModalScreen[None]):
     # ── actions ────────────────────────────────────────────
 
     def action_close(self) -> None:
-        self.dismiss(None)
+        self.dismiss(self._dirty)
 
     @work(exclusive=False)
     async def action_refresh(self) -> None:
-        await self._reload()
+        await self._reload(mark_dirty=False)  # manual refresh isn't a mutation
         self.app.notify("refreshed", severity="information", timeout=2)
 
     @work(exclusive=True)

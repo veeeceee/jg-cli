@@ -185,41 +185,57 @@ async def gather_flow_anchors(config: Config) -> list[cl.Anchor]:
 async def gather_project(config: Config, project: object) -> ProjectView:
     """Current-sprint board grouped by the real workflow columns
     (render.GROUP_ORDER via normalize_status), reconcile state on cards, sprint
-    completion for health, and this plan's PRs."""
-    from jg import render
+    completion for health, and this plan's PRs.
+
+    The four sources (sprint tickets, open PRs, merged PRs, sessions) are fetched
+    concurrently, then the *sprint* tickets are reconciled directly — so we avoid
+    rec.gather's redundant my-open-tickets search and fetch PRs only once."""
+    from jg import github, render, tmux
     from jg.api import JiraClient
 
     base = getattr(project, "jql", "") or f"project = {config.default_project}"
     jql = f"({base}) AND sprint in openSprints()"
-    tickets: list[dict] = []
-    try:
+
+    async def _tickets() -> dict:
         async with JiraClient(config) as api:
-            data = await api.search_jql(jql, fields=["summary", "status"], max_results=200)
-        tickets = data.get("issues", [])
-    except Exception:
-        pass
+            return await api.search_jql(jql, fields=["summary", "status"], max_results=200)
 
-    rec_items = await rec.gather(config)
-    item_by_key = {i.key: i for i in rec_items if i.key}
+    data_r, open_r, merged_r, panes_r = await asyncio.gather(
+        _tickets(),
+        asyncio.to_thread(github.my_open_prs),
+        asyncio.to_thread(github.my_recent_merged_prs),
+        asyncio.to_thread(tmux.list_panes),
+        return_exceptions=True,
+    )
+    issues = (data_r.get("issues", []) if isinstance(data_r, dict) else [])
+    open_prs = open_r if isinstance(open_r, list) else []
+    merged_prs = merged_r if isinstance(merged_r, list) else []
+    panes = panes_r if isinstance(panes_r, list) else []
 
-    prs_raw: list[dict] = []
-    try:
-        from jg import github
+    # Reconcile the sprint tickets against live sessions + PRs (pure core, no I/O).
+    sessions = [
+        rec.Session(title=p.title, idle_seconds=p.idle_seconds, pane_id=p.pane_id, jg_key=p.jg_key)
+        for p in panes if p.jg_key
+    ]
+    rec_tickets = []
+    for iss in issues:
+        f = iss.get("fields") or {}
+        st = f.get("status") or {}
+        cat = (st.get("statusCategory") or {}).get("name") or ""
+        rec_tickets.append(rec.Ticket(iss.get("key", ""), st.get("name", ""), cat, f.get("summary", "") or ""))
+    rec_prs = [rec.PR(p.get("headRefName", "") or "", "open", p.get("title", "") or "", p.get("url", "") or "") for p in open_prs]
+    rec_prs += [rec.PR(p.get("headRefName", "") or "", "merged", p.get("title", "") or "", p.get("url", "") or "") for p in merged_prs]
+    item_by_key = {i.key: i for i in rec.reconcile(sessions, rec_tickets, rec_prs) if i.key}
 
-        repos = set(getattr(project, "repos", None) or [])
-        for pr in await asyncio.to_thread(github.my_open_prs):
-            repo = (pr.get("repository") or {}).get("nameWithOwner", "")
-            if not repos or repo in repos:
-                prs_raw.append(pr)
-    except Exception:
-        pass
+    repos = set(getattr(project, "repos", None) or [])
+    prs_raw = [p for p in open_prs if not repos or (p.get("repository") or {}).get("nameWithOwner", "") in repos]
     pr_keys = {rec.extract_key(p.get("headRefName", "") or p.get("title", "")) for p in prs_raw}
     pr_keys.discard(None)
 
     groups: dict[str, list[Card]] = {}
     done = 0
     total = 0
-    for iss in tickets:
+    for iss in issues:
         f = iss.get("fields") or {}
         st = f.get("status") or {}
         cat = (st.get("statusCategory") or {}).get("name") or ""
@@ -566,8 +582,10 @@ class ProjectScreen(Screen):
         elif isinstance(item, _IncomingRow):
             _open_incoming(self.app, item.item, self.config)
 
-    def _after(self, _result: object) -> None:
-        self.run_worker(self._load())
+    def _after(self, changed: object) -> None:
+        # only pay the board reload if the ticket modal actually mutated something
+        if changed:
+            self.run_worker(self._load())
 
     def action_jump(self) -> None:
         f = self.app.focused
@@ -746,9 +764,10 @@ class FlowApp(App):
         elif isinstance(item, _IncomingRow):
             _open_incoming(self, item.item, self.config)
 
-    def _after_detail(self, _result: object) -> None:
-        # the ticket modal may have transitioned/edited — always re-reconcile
-        self.run_worker(self._refresh())
+    def _after_detail(self, changed: object) -> None:
+        # re-reconcile only if the ticket modal mutated something
+        if changed:
+            self.run_worker(self._refresh())
 
     def _focused_recitem(self) -> rec.ReconcileItem | None:
         f = self.focused

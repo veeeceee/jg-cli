@@ -35,6 +35,10 @@ from pathlib import Path
 CACHE_DIR = Path.home() / ".cache" / "jg"
 CACHE_FILE = CACHE_DIR / "clusters.json"
 
+# LLM groupings below this confidence are dropped to the residual rather than
+# shown — "a wrong grouping is worse than none". Uses the model's own certainty.
+MIN_LLM_CONFIDENCE = 0.5
+
 
 class ClusterError(Exception):
     pass
@@ -120,10 +124,12 @@ def merge_llm_edges(
     llm_rows: list[dict],
     anchor_keys: set[str],
     loose_ids: set[str],
+    min_confidence: float = MIN_LLM_CONFIDENCE,
 ) -> list[Edge]:
     """Fold LLM assignments into the backbone under the asymmetry rules:
     authored always wins, the LLM may only place a *loose* item onto a *real*
-    anchor, and it can never merge anchors (edges are item→anchor only)."""
+    anchor, it can never merge anchors (edges are item→anchor only), and
+    low-confidence guesses are dropped to the residual (min_confidence)."""
     edges = list(backbone)
     already_anchored = {e.item_id for e in backbone}
     for row in llm_rows:
@@ -142,6 +148,8 @@ def merge_llm_edges(
         except (TypeError, ValueError):
             conf = 0.5
         conf = max(0.0, min(1.0, conf))
+        if conf < min_confidence:          # too weak to show — leave it unclustered
+            continue
         why = (row.get("reason") or "").strip()
         # "grouped:" prefix keeps LLM edges from ever reading as a hard link.
         reason = f"grouped: {why}" if why else "grouped by topic"
@@ -281,6 +289,7 @@ async def enrich(
     *,
     claude_path: str = "claude",
     use_cache: bool = True,
+    min_confidence: float = MIN_LLM_CONFIDENCE,
 ) -> ClusterResult:
     """Backbone (sync) + LLM assignment of the loose residual (async, fail-soft).
     Never raises on the LLM path — a failure degrades to backbone-only."""
@@ -296,6 +305,6 @@ async def enrich(
         except Exception:
             llm_rows = []  # fail-soft: floor still renders from the backbone
 
-    edges = merge_llm_edges(backbone, llm_rows, anchor_keys, {it.id for it in loose})
+    edges = merge_llm_edges(backbone, llm_rows, anchor_keys, {it.id for it in loose}, min_confidence)
     clusters, residual = group(edges, anchors, items)
     return ClusterResult(clusters=clusters, residual=residual, edges=edges)

@@ -218,25 +218,27 @@ async def gather(config: Config) -> list[ReconcileItem]:
     # Only panes jg stamped with @jg_key count as task sessions — a bare shell or
     # a Claude pane on no ticket isn't in-progress work, and relying on the title
     # (which Claude overwrites) is what flooded the first run with noise.
-    sessions = [
-        Session(title=p.title, idle_seconds=p.idle_seconds, pane_id=p.pane_id, jg_key=p.jg_key)
-        for p in tmux.list_panes()
-        if p.jg_key
-    ]
+    async def _sessions() -> list[Session]:
+        panes = await asyncio.to_thread(tmux.list_panes)
+        return [
+            Session(title=p.title, idle_seconds=p.idle_seconds, pane_id=p.pane_id, jg_key=p.jg_key)
+            for p in panes
+            if p.jg_key
+        ]
 
-    tickets: list[Ticket] = []
-    try:
+    async def _tickets() -> list[Ticket]:
         async with JiraClient(config) as api:
             data = await api.search_jql(
                 "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC",
                 fields=["summary", "status"],
                 max_results=100,
             )
+        out: list[Ticket] = []
         for iss in data.get("issues", []):
             fields = iss.get("fields") or {}
             st = fields.get("status") or {}
             cat = (st.get("statusCategory") or {}).get("name") or ""
-            tickets.append(
+            out.append(
                 Ticket(
                     key=iss.get("key", ""),
                     status=st.get("name", ""),
@@ -244,23 +246,25 @@ async def gather(config: Config) -> list[ReconcileItem]:
                     summary=fields.get("summary", "") or "",
                 )
             )
-    except Exception:
-        pass
+        return out
 
-    prs: list[PR] = []
-    try:
-        for p in await asyncio.to_thread(github.my_open_prs):
-            prs.append(
-                PR(branch=p.get("headRefName", ""), state="open", title=p.get("title", ""), url=p.get("url", ""))
-            )
-    except Exception:
-        pass
-    try:
-        for p in await asyncio.to_thread(github.my_recent_merged_prs):
-            prs.append(
-                PR(branch=p.get("headRefName", ""), state="merged", title=p.get("title", ""), url=p.get("url", ""))
-            )
-    except Exception:
-        pass
+    async def _prs(fetch, state: str) -> list[PR]:
+        return [
+            PR(branch=p.get("headRefName", ""), state=state, title=p.get("title", ""), url=p.get("url", ""))
+            for p in await asyncio.to_thread(fetch)
+        ]
 
-    return reconcile(sessions, tickets, prs)
+    # The four sources are independent — fetch concurrently (was serial, ~3.5s →
+    # bounded by the slowest call). return_exceptions keeps each source fail-soft.
+    sess, ticks, open_prs, merged_prs = await asyncio.gather(
+        _sessions(),
+        _tickets(),
+        _prs(github.my_open_prs, "open"),
+        _prs(github.my_recent_merged_prs, "merged"),
+        return_exceptions=True,
+    )
+
+    def _ok(v: object) -> list:
+        return v if isinstance(v, list) else []
+
+    return reconcile(_ok(sess), _ok(ticks), _ok(open_prs) + _ok(merged_prs))

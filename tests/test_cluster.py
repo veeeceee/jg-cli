@@ -75,6 +75,16 @@ def test_confidence_is_clamped_and_defaulted():
     assert 0.0 <= edges[1].confidence <= 1.0
 
 
+def test_low_confidence_edge_is_dropped():
+    # a weak guess (like the 0.4 STS mis-grouping) should not be shown
+    rows = [{"item_id": "pr:x", "anchor_key": "CH-1", "reason": "loose match", "confidence": 0.4}]
+    edges = merge_llm_edges([], rows, {"CH-1"}, loose_ids={"pr:x"})
+    assert edges == []
+    # a confident one survives
+    rows = [{"item_id": "pr:x", "anchor_key": "CH-1", "reason": "clear", "confidence": 0.8}]
+    assert len(merge_llm_edges([], rows, {"CH-1"}, loose_ids={"pr:x"})) == 1
+
+
 def test_group_forms_clusters_and_residual():
     items = [
         Item("pr:r#1", "pr", "fix", linked_keys=["CH-1"]),
