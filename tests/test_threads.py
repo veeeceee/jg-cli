@@ -3,9 +3,26 @@ stability. No I/O, no LLM."""
 
 from __future__ import annotations
 
-from jg.threads import Thread, apply_join, thread_id
+from jg.threads import Thread, apply_join, prune_stale, thread_id
 
 NOW = "2026-07-17T12:00:00"
+
+
+def test_prune_drops_stale_keeps_fresh():
+    fresh = Thread("th-f", "fresh", ["a", "b"], NOW, "2026-07-10T00:00:00")   # 7 days
+    stale = Thread("th-s", "stale", ["c", "d"], NOW, "2026-06-01T00:00:00")   # ~46 days
+    kept = prune_stale([fresh, stale], NOW, ttl_days=21)
+    assert [t.id for t in kept] == ["th-f"]
+
+
+def test_prune_tolerates_bad_timestamp():
+    bad = Thread("th-b", "bad", ["a", "b"], NOW, "not-a-date")
+    assert prune_stale([bad], NOW) == [bad]  # kept, not deleted, on parse error
+
+
+def test_prune_bad_now_is_noop():
+    stale = Thread("th-s", "x", ["a", "b"], NOW, "2000-01-01T00:00:00")
+    assert prune_stale([stale], "garbage") == [stale]
 
 
 def test_thread_id_stable_and_order_independent():

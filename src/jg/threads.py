@@ -17,6 +17,7 @@ adapter (subprocess + persistence). TUI-free, like cluster.py — ports cleanly.
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 from dataclasses import asdict, dataclass, field
@@ -24,6 +25,10 @@ from pathlib import Path
 
 CACHE_DIR = Path.home() / ".cache" / "jg"
 THREADS_FILE = CACHE_DIR / "threads.json"
+
+# Threads not touched within this window are dropped (staleness cleanup) — bounds
+# threads.json growth without needing membership liveness tracking.
+THREAD_TTL_DAYS = 21
 
 
 @dataclass
@@ -91,6 +96,24 @@ def apply_join(
     return stored
 
 
+def prune_stale(threads: list[Thread], now_iso: str, ttl_days: int = THREAD_TTL_DAYS) -> list[Thread]:
+    """Drop threads whose `updated` is older than ttl_days. Tolerant of bad/blank
+    timestamps (kept) so a parse hiccup never silently deletes a thread."""
+    try:
+        now = dt.datetime.fromisoformat(now_iso)
+    except ValueError:
+        return threads
+    kept: list[Thread] = []
+    for t in threads:
+        try:
+            updated = dt.datetime.fromisoformat(t.updated) if t.updated else now
+        except ValueError:
+            updated = now
+        if (now - updated).days <= ttl_days:
+            kept.append(t)
+    return kept
+
+
 def _build_prompt(new_items: list[EItem], stored: list[Thread]) -> str:
     existing = "\n".join(f"- {t.id}: {t.descriptor}" for t in stored) or "(none yet)"
     items = "\n".join(f"- {it.id}: [{it.kind}] {it.label} — {it.detail}" for it in new_items)
@@ -118,10 +141,11 @@ async def emergent(
     threads are returned unchanged (no re-partition)."""
     from jg import llm
 
-    stored = load_threads()
+    stored = prune_stale(load_threads(), now)   # drop rotten threads first
     assigned = {m for t in stored for m in t.members}
     new_items = [it for it in residual if it.id not in assigned]
     if not new_items:
+        save_threads(stored)                    # persist the prune even with no new items
         return stored
     try:
         text = await llm.run_claude(_build_prompt(new_items, stored), claude_path)

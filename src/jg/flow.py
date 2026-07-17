@@ -938,6 +938,7 @@ class FlowApp(App):
         Binding("r", "refresh", "refresh"),
     ]
     _PANELS: ClassVar[list[str]] = ["#scope", "#flow"]
+    TITLE = "jg · my work — incoming / in-progress / resolving   (h/l panels · enter open · s rule · f filtered · r refresh · q quit)"
 
     def __init__(self, config: Config):
         super().__init__()
@@ -959,7 +960,7 @@ class FlowApp(App):
     def compose(self) -> ComposeResult:
         from jg.tui import GradientPanel
 
-        yield Static("jg · my work — incoming / in-progress / resolving   (h/l: panels · enter: jump/open · r: refresh · q: quit)", id="title")
+        yield Static(self.TITLE, id="title")
         with Horizontal(id="body"):
             yield GradientPanel(ListView(id="scope"), panel_title="LENS", id="scope-panel")
             yield GradientPanel(ListView(id="flow"), panel_title="MY WORK", id="flow-panel")
@@ -1000,11 +1001,22 @@ class FlowApp(App):
         await self._render_flow()                    # deterministic floor — instant
         self.run_worker(self._enrich())              # LLM layer — arrives later
 
+    def _set_enriching(self, on: bool) -> None:
+        try:
+            self.query_one("#title", Static).update(self.TITLE + ("   ⟳ enriching…" if on else ""))
+        except Exception:
+            pass
+
     async def _enrich(self) -> None:
         """Progressive LLM enhancement over the instant floor: first the triage
-        judge resolves the unsure middle, then clustering groups the surfaced."""
-        await self._triage_judge()
-        await self._cluster_overlay()
+        judge resolves the unsure middle, then clustering groups the surfaced.
+        A title spinner marks the wait so the floor doesn't look stuck."""
+        self._set_enriching(True)
+        try:
+            await self._triage_judge()
+            await self._cluster_overlay()
+        finally:
+            self._set_enriching(False)
 
     async def _triage_judge(self) -> None:
         """LLM-judge the triage-unsure email (conservative). Fail-soft."""
