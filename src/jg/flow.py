@@ -666,6 +666,20 @@ def _col_id(group: str) -> str:
     return "c-" + re.sub(r"[^a-z0-9]+", "-", group.lower()).strip("-")
 
 
+def _triage_rule(kind: str, label: str) -> tuple[str, bool] | None:
+    """The durable rule a triage correction derives from an item, or None if the
+    item type can't be ruled on. Returns (rule_string, is_channel): email → the
+    sender name (matches the From substring); Slack channel → the channel name;
+    a DM or a PR/Zoho item → None (DMs are always actionable, PRs/Zoho bypass)."""
+    if kind == "email":
+        r = label.strip()
+        return (r, False) if r else None
+    if kind == "slack" and label.startswith("#"):
+        c = label.lstrip("#").strip()
+        return (c, True) if c else None
+    return None
+
+
 def _row_identity(row: object) -> tuple[str, str] | None:
     """A stable token for a flow row, so selection survives a list re-render."""
     if isinstance(row, _FlowRow):
@@ -919,6 +933,7 @@ class FlowApp(App):
         Binding("left", "focus_left", "← scope", show=False),
         Binding("g", "jump", "jump to session", show=True),
         Binding("f", "toggle_filtered", "show/hide filtered", show=True),
+        Binding("s", "correct", "suppress/surface", show=True),
         Binding("q", "quit", "quit"),
         Binding("r", "refresh", "refresh"),
     ]
@@ -1021,6 +1036,42 @@ class FlowApp(App):
     async def action_toggle_filtered(self) -> None:
         self._show_filtered = not self._show_filtered
         await self._render_flow()
+
+    async def action_correct(self) -> None:
+        """Correct triage on the highlighted item: a surfaced email/Slack item →
+        suppress (durable noise rule); a suppressed one → surface (signal rule).
+        Saves the rule to config and flips all matching items instantly."""
+        row = self.query_one("#flow", ListView).highlighted_child
+        if not isinstance(row, _IncomingRow):
+            return
+        item = row.item
+        r = _triage_rule(item.kind, item.label)
+        if r is None:
+            self.notify("triage rules apply to email senders / Slack channels", severity="warning")
+            return
+        rule, is_channel = r
+        suppress = item.triage != "suppressed"   # surfaced → suppress; else → surface
+        t = self.config.triage
+        target_list = (
+            (t.noise_channels if suppress else t.signal_channels)
+            if is_channel
+            else (t.noise_senders if suppress else t.signal_senders)
+        )
+        if rule not in target_list:
+            target_list.append(rule)
+        try:
+            self.config.save()
+        except Exception as e:
+            self.notify(f"save failed: {type(e).__name__}", severity="error")
+            return
+        # Instant local flip of every incoming item matching this rule.
+        verdict = "suppressed" if suppress else "actionable"
+        key = rule.lower()
+        for i in self._incoming:
+            if i.kind == item.kind and key in i.label.lower():
+                i.triage, i.triage_reason = verdict, ("you suppressed" if suppress else "you surfaced")
+        await self._render_flow()
+        self.notify(f"{'suppressed' if suppress else 'surfaced'} '{rule}' — rule saved", severity="information")
 
     async def _render_flow(self) -> None:
         """Render the flow list. Surfaced incoming renders flat (floor) or grouped
