@@ -135,6 +135,31 @@ async def gather_flow(config: Config) -> tuple[list[Incoming], list[rec.Reconcil
     concurrently — Zoho dominates, so serializing them made the whole load wait
     on it. Each source fails soft."""
 
+    async def _assigned_jira() -> list[Incoming]:
+        """Recently-created To-Do tickets assigned to me — inbound work that
+        reconcile classifies TRACKED (hidden) and that only otherwise arrives as
+        a suppressed Jira notification email. Surfaced directly from Jira."""
+        from jg.api import JiraClient
+
+        try:
+            async with JiraClient(config) as api:
+                data = await api.search_jql(
+                    'assignee = currentUser() AND statusCategory = "To Do" '
+                    "AND created >= -14d ORDER BY created DESC",
+                    fields=["summary", "status"],
+                    max_results=15,
+                )
+        except Exception:
+            return []
+        base = config.default_cloud_url.rstrip("/")
+        out: list[Incoming] = []
+        for iss in data.get("issues", []):
+            key = iss.get("key", "")
+            summary = (iss.get("fields") or {}).get("summary", "") or ""
+            url = f"{base}/browse/{key}" if base and key else ""
+            out.append(Incoming("jira", key, summary, url, ref=key))
+        return out
+
     async def _review_prs() -> list[Incoming]:
         from jg import github
 
@@ -212,18 +237,18 @@ async def gather_flow(config: Config) -> tuple[list[Incoming], list[rec.Reconcil
             )
         return out
 
-    items_r, review_r, zoho_r, gmail_r, slack_r = await asyncio.gather(
-        rec.gather(config), _review_prs(), _zoho(), _gmail(), _slack(), return_exceptions=True
+    items_r, jira_r, review_r, zoho_r, gmail_r, slack_r = await asyncio.gather(
+        rec.gather(config), _assigned_jira(), _review_prs(), _zoho(), _gmail(), _slack(),
+        return_exceptions=True,
     )
     items = items_r if isinstance(items_r, list) else []
     in_progress = [i for i in items if i.state in _IN_PROGRESS]
     resolving = [i for i in items if i.state in _RESOLVING]
-    incoming = (
-        (review_r if isinstance(review_r, list) else [])
-        + (zoho_r if isinstance(zoho_r, list) else [])
-        + (gmail_r if isinstance(gmail_r, list) else [])
-        + (slack_r if isinstance(slack_r, list) else [])
-    )
+
+    def _ok(v: object) -> list:
+        return v if isinstance(v, list) else []
+
+    incoming = _ok(jira_r) + _ok(review_r) + _ok(zoho_r) + _ok(gmail_r) + _ok(slack_r)
     return incoming, in_progress, resolving
 
 
@@ -358,6 +383,7 @@ class _ClusterHead(ListItem):
 
 class _IncomingRow(ListItem):
     _GLYPH: ClassVar[dict[str, tuple[str, str]]] = {
+        "jira": ("◆", "#7dcfff"),   # a Jira ticket assigned to me
         "review": ("⇄", "magenta"),
         "zoho": ("⛑", "orange3"),
         "email": ("✉", "#7aa2f7"),
@@ -647,6 +673,11 @@ def _open_incoming(app: App, inc: Incoming, config: Config) -> None:
 
             app.push_screen(PRDetailModal(repo=repo, number=int(num), url=inc.url, config=config))
             return
+    if inc.kind == "jira" and inc.ref:
+        from jg.tui import TicketDetailModal
+
+        app.push_screen(TicketDetailModal(inc.ref, config))
+        return
     if inc.kind == "zoho" and inc.ref:
         app.push_screen(ZohoDetailModal(config, inc.ref, inc.detail, inc.url))
         return
@@ -1110,7 +1141,7 @@ class FlowApp(App):
                     inc = by_cid.get(m.id)
                     if inc is not None:
                         await lv.append(_IncomingRow(inc, edge=m.edge))
-            threaded: set[str] = set()
+            grouped: set[str] = {m.id for c in self._clusters for m in c.members}
             for t in self._threads:                       # emergent durable threads
                 present = [by_cid[m] for m in t.members if m in by_cid]
                 if not present:
@@ -1118,10 +1149,9 @@ class FlowApp(App):
                 await lv.append(_ThreadHead(t.descriptor, len(present)))
                 for inc in present:
                     await lv.append(_IncomingRow(inc, nested=True))
-                    threaded.add(inc.cid)
-            for it in self._residual:                     # loose (unthreaded) residual
-                inc = by_cid.get(it.id)
-                if inc is not None and inc.cid not in threaded:
+                    grouped.add(inc.cid)
+            for inc in surfaced:                           # loose: anything not grouped (incl. jira)
+                if inc.cid not in grouped:
                     await lv.append(_IncomingRow(inc))
         if suppressed:
             await lv.append(_FilteredRow(len(suppressed), self._show_filtered))
@@ -1152,6 +1182,8 @@ class FlowApp(App):
         if not surfaced:
             return
         kind_map = {"review": "pr", "zoho": "zoho", "email": "email", "slack": "slack"}
+        # jira items ARE tickets, not loose comms — they anchor the graph, they
+        # don't get clustered under it. They render flat in the loose section.
         items = [
             cl.Item(
                 id=i.cid,
@@ -1161,6 +1193,7 @@ class FlowApp(App):
                 linked_keys=i.keys,
             )
             for i in surfaced
+            if i.kind != "jira"
         ]
         anchors = await gather_flow_anchors(self.config)
         clusters: list[cl.Cluster] = []
