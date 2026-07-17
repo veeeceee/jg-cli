@@ -2648,10 +2648,10 @@ class GateModal(ModalScreen["dict | None"]):
 
 
 class EscalateModal(ModalScreen["dict | None"]):
-    """Escalate a Zoho support ticket into a Jira task. Pick the target epic
-    (enter) then state the dev ask (enter) — jg then spawns Claude to author the
-    Jira task and link both systems. jg stays read-only; Claude does the
-    cross-system writes via its Jira + Zoho MCPs."""
+    """Escalate an item (Zoho ticket, email, Slack thread, emergent cluster) into
+    a Jira task. Pick the target epic (enter) then state the dev ask (enter) — the
+    caller then spawns Claude to author the Jira task and link systems. jg stays
+    read-only; Claude does the cross-system writes via its MCPs."""
 
     DEFAULT_CSS = """
     EscalateModal { align: center middle; background: #000000 97%; }
@@ -2665,24 +2665,23 @@ class EscalateModal(ModalScreen["dict | None"]):
 
     BINDINGS = [Binding("escape", "cancel", "cancel", show=False)]  # noqa: RUF012
 
-    def __init__(self, config: Config, zoho_number: str, zoho_subject: str, zoho_id: str, zoho_url: str):
+    def __init__(self, config: Config, source_label: str, subject: str, url: str = ""):
         super().__init__()
         self.config = config
-        self.zoho_number = zoho_number
-        self.zoho_subject = zoho_subject
-        self.zoho_id = zoho_id
-        self.zoho_url = zoho_url
+        self.source_label = source_label
+        self.subject = subject
+        self.url = url
         self._epics: ListView | None = None
         self._ask: Input | None = None
         self._chosen: _EpicItem | None = None
 
     def compose(self) -> ComposeResult:
-        yield GradientPanel(panel_title=f"escalate Zoho #{self.zoho_number} → Jira")
+        yield GradientPanel(panel_title=f"escalate → Jira · {self.source_label}")
 
     async def on_mount(self) -> None:
         head = Text()
-        head.append("support ticket  ", style="bold #c0caf5")
-        head.append(f"#{self.zoho_number}  {self.zoho_subject[:60]}", style="white")
+        head.append("source  ", style="bold #c0caf5")
+        head.append(f"{self.source_label}  {self.subject[:60]}", style="white")
         head.append("\n\nPick the target epic (enter), then describe the dev ask.", style="dim")
         self._epics = ListView()
         self._ask = Input(placeholder="what needs to be built/fixed? (the dev ask)", id="esc-ask")
@@ -4380,7 +4379,7 @@ class ChDashboard(App):
             self.notify(f"already linked to {', '.join(row.jira_keys)}", severity="information")
             return
         self.push_screen(
-            EscalateModal(self.config, row.ticket_number, row.subject, row.zoho_id, row.web_url),
+            EscalateModal(self.config, f"Zoho #{row.ticket_number}", row.subject, row.web_url),
             lambda d: self._do_escalate(row, d),
         )
 

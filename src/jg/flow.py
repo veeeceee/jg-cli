@@ -664,6 +664,76 @@ class SlackDetailModal(ModalScreen[None]):
             webbrowser.open(self.url)
 
 
+class RatifyModal(ModalScreen["list[str] | None"]):
+    """Ratify which emergent-thread members come onto the new anchor at promotion.
+    Members pre-checked; space toggles, enter confirms → the checked cids."""
+
+    DEFAULT_CSS = """
+    RatifyModal { align: center middle; background: #000000 90%; }
+    RatifyModal #rbox { background: #1c1c1e; border: solid #bb9af7; width: 84; height: auto; max-height: 80%; padding: 1 2; }
+    RatifyModal #rhead { height: auto; margin: 0 0 1 0; }
+    RatifyModal ListView { background: transparent; height: auto; max-height: 20; }
+    RatifyModal ListView > ListItem { background: transparent; padding: 0; }
+    """
+    BINDINGS = [  # noqa: RUF012
+        Binding("space", "toggle", "toggle"),
+        Binding("enter", "confirm", "confirm"),
+        Binding("escape", "cancel", "cancel"),
+    ]
+
+    def __init__(self, descriptor: str, members: list[tuple[str, str, str]]):
+        # members: list of (cid, label, detail)
+        super().__init__()
+        self.descriptor = descriptor
+        self.members = members
+        self.checked: dict[str, bool] = {cid: True for cid, _, _ in members}
+        self._meta: dict[str, tuple[str, str]] = {cid: (label, detail) for cid, label, detail in members}
+
+    def _line(self, cid: str) -> Text:
+        label, detail = self._meta[cid]
+        box = "[x]" if self.checked[cid] else "[ ]"
+        t = Text(f" {box} ", style="#9ece6a" if self.checked[cid] else "#565f89")
+        t.append(f"{label[:22]:<22} ", style="bold #c0caf5")
+        t.append(detail[:40], style="#a9b1d6")
+        return t
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="rbox"):
+            head = Text()
+            head.append("promote emergent thread → Jira\n", style="bold #ffffff")
+            head.append(f"⧉ {self.descriptor}\n\n", style="#bb9af7")
+            head.append("Which members come onto the new ticket? space toggles · enter confirms · esc cancel", style="dim")
+            yield Static(head, id="rhead")
+            rows: list[ListItem] = []
+            for cid, _, _ in self.members:
+                li = ListItem(Static(self._line(cid)))
+                li.cid = cid  # type: ignore[attr-defined]
+                rows.append(li)
+            yield ListView(*rows, id="rlist")
+
+    def on_mount(self) -> None:
+        self.query_one("#rlist", ListView).focus()
+
+    def action_toggle(self) -> None:
+        row = self.query_one("#rlist", ListView).highlighted_child
+        cid = getattr(row, "cid", None)
+        if cid is None:
+            return
+        self.checked[cid] = not self.checked[cid]
+        row.query_one(Static).update(self._line(cid))
+
+    @on(ListView.Selected)
+    def _on_enter(self, ev: ListView.Selected) -> None:
+        # ListView consumes enter (selection); treat it as confirm.
+        self.action_confirm()
+
+    def action_confirm(self) -> None:
+        self.dismiss([cid for cid, _, _ in self.members if self.checked[cid]])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 def _open_incoming(app: App, inc: Incoming, config: Config) -> None:
     """Open a PR / Zoho ticket / email / Slack thread as a modal (browser fallback)."""
     if inc.kind == "review" and inc.url:
@@ -965,6 +1035,7 @@ class FlowApp(App):
         Binding("g", "jump", "jump to session", show=True),
         Binding("f", "toggle_filtered", "show/hide filtered", show=True),
         Binding("s", "correct", "suppress/surface", show=True),
+        Binding("J", "escalate", "escalate→jira", show=True),
         Binding("q", "quit", "quit"),
         Binding("r", "refresh", "refresh"),
     ]
@@ -1243,6 +1314,82 @@ class FlowApp(App):
         # re-reconcile only if the ticket modal mutated something
         if changed:
             self.run_worker(self._refresh())
+
+    def action_escalate(self) -> None:
+        self.run_worker(self._escalate_flow())
+
+    async def _escalate_flow(self) -> None:
+        """Promote a comm item (or its emergent thread) into a Jira ticket, via
+        the escalate gate. Ratifies threadmates if the item is in a thread; then
+        Claude creates the ticket + links (with your confirmation); jg dissolves
+        the thread. jg itself writes nothing external."""
+        from jg.tui import EscalateModal
+
+        row = self.query_one("#flow", ListView).highlighted_child
+        if not isinstance(row, _IncomingRow):
+            return
+        item = row.item
+        if item.kind not in ("email", "slack", "zoho"):
+            self.notify("escalate email / Slack / Zoho items → Jira", severity="warning")
+            return
+
+        surfaced = self._surfaced()
+        by_cid = {i.cid: i for i in surfaced}
+        thread = next((t for t in self._threads if item.cid in t.members), None)
+        member_items = (
+            [(by_cid[c].cid, by_cid[c].label, by_cid[c].detail) for c in thread.members if c in by_cid]
+            if thread else []
+        )
+        if thread is not None and len(member_items) >= 2:
+            confirmed = await self.push_screen_wait(RatifyModal(thread.descriptor, member_items))
+            if confirmed is None:
+                return  # cancelled
+        else:
+            thread, confirmed = None, [item.cid]  # solo escalation — skip ratification
+
+        decision = await self.push_screen_wait(
+            EscalateModal(self.config, f"{item.kind}: {item.label}", item.detail, item.url)
+        )
+        if not decision:
+            return
+        self._do_promote(item, thread, confirmed, by_cid, decision)
+
+    def _do_promote(self, item, thread, confirmed_cids, by_cid, decision) -> None:
+        from jg.tmux import quote_for_shell, spawn
+
+        members = [by_cid[c] for c in confirmed_cids if c in by_cid] or [item]
+        lines = "\n".join(f"  - [{m.kind}] {m.label}: {m.detail}  {m.url}".rstrip() for m in members)
+        zoho_ids = [m.ref for m in members if m.kind == "zoho" and m.ref]
+        prompt = (
+            f"Create a Jira task under {decision['epic_key']} \"{decision['epic_summary']}\" "
+            f"from this cluster of related items with no existing ticket.\n"
+            f"Dev ask: {decision['ask']}\n\n"
+            f"Related items:\n{lines}\n\n"
+            f"Do this:\n"
+            f"1. Create a Jira task under {decision['epic_key']} — a clear summary + a description "
+            f"capturing the dev ask and the context from ALL the items above. Show me the proposed "
+            f"task and get my confirmation before creating.\n"
+            f"2. For any Zoho items ({', '.join(zoho_ids) or 'none'}), write the new Jira key into "
+            f"their 'Associated Jira Issue Keys' field (Zoho Desk MCP updateTicket, "
+            f"orgId {self.config.zoho.org_id}).\n"
+            f"3. The email/Slack items can't hold a hard link — reference them in the Jira description.\n"
+            f"Report the created key."
+        )
+        try:
+            spawn(f"{self.config.ai.claude_path} {quote_for_shell(prompt)}",
+                  title=f"promote·{(thread.descriptor if thread else item.label)[:20]}", config=self.config.tmux)
+        except RuntimeError as e:
+            self.notify(str(e), severity="error")
+            return
+        # jg-side: dissolve the promoted emergent thread (members re-home — Zoho via
+        # the written link → anchored next refresh; email/Slack fall to the residual).
+        if thread is not None:
+            from jg import threads as th
+
+            th.save_threads([t for t in th.load_threads() if t.id != thread.id])
+            self._threads = [t for t in self._threads if t.id != thread.id]
+            self.run_worker(self._render_flow())
+        self.notify("promoting → Jira (Claude pane, awaiting your confirm)", severity="information")
 
     def _focused_recitem(self) -> rec.ReconcileItem | None:
         f = self.focused
