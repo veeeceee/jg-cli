@@ -552,8 +552,67 @@ class EmailDetailModal(ModalScreen[None]):
             webbrowser.open(self.url)
 
 
+class SlackDetailModal(ModalScreen[None]):
+    """Full Slack thread — cleaned messages, oldest→newest. Read-only; `o` opens
+    Slack to reply. Assess in jg, act in Slack."""
+
+    DEFAULT_CSS = """
+    SlackDetailModal { align: center middle; background: #000000 85%; }
+    SlackDetailModal #sbox { background: #1c1c1e; border: solid #89ddff; width: 88; height: 82%; padding: 1 2; }
+    """
+    BINDINGS = [  # noqa: RUF012
+        Binding("escape", "close", "close"),
+        Binding("q", "close", "close"),
+        Binding("o", "browser", "open in Slack"),
+    ]
+
+    def __init__(self, config: Config, channel: str, ts: str, title: str = "", url: str = ""):
+        super().__init__()
+        self.config = config
+        self.channel = channel
+        self.ts = ts
+        self.title = title
+        self.url = url
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="sbox"):
+            yield Static("loading…", id="sbody")
+
+    def on_mount(self) -> None:
+        self.run_worker(self._load())
+
+    async def _load(self) -> None:
+        from jg import slack
+
+        try:
+            async with slack.SlackClient(self.config) as sc:
+                await sc.auth_test()  # sets team_url for permalinks
+                thread = await sc.thread_replies(self.channel, self.ts)
+        except Exception as e:
+            self.query_one("#sbody", Static).update(Text(f"failed to load: {type(e).__name__}", style="red"))
+            return
+        body = Text()
+        body.append(f"{self.title or self.channel}\n", style="bold #ffffff")
+        body.append(f"{len(thread)} message{'s' if len(thread) != 1 else ''} in thread\n\n", style="#565f89")
+        for m in thread:
+            body.append(f"{m.user_name}", style="#7aa2f7")
+            when = slack.format_ts(m.ts)
+            if when:
+                body.append(f"   {when}", style="#3d3d52")
+            body.append("\n", style="")
+            body.append((m.text or "—") + "\n\n", style="#a9b1d6")
+        self.query_one("#sbody", Static).update(body)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def action_browser(self) -> None:
+        if self.url:
+            webbrowser.open(self.url)
+
+
 def _open_incoming(app: App, inc: Incoming, config: Config) -> None:
-    """Open a PR / Zoho ticket / email as a modal (browser fallback)."""
+    """Open a PR / Zoho ticket / email / Slack thread as a modal (browser fallback)."""
     if inc.kind == "review" and inc.url:
         repo, _, num = inc.label.rpartition("#")
         if num.isdigit():
@@ -566,6 +625,10 @@ def _open_incoming(app: App, inc: Incoming, config: Config) -> None:
         return
     if inc.kind == "email" and inc.ref:
         app.push_screen(EmailDetailModal(config, inc.ref, inc.detail, inc.url))
+        return
+    if inc.kind == "slack" and ":" in inc.ref:
+        channel, _, ts = inc.ref.partition(":")
+        app.push_screen(SlackDetailModal(config, channel, ts, inc.label, inc.url))
         return
     if inc.url:
         webbrowser.open(inc.url)

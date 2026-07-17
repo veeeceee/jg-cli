@@ -65,6 +65,16 @@ class SlackMsg:
 
 
 # ── text cleaning (pure) ────────────────────────────────────────────────────────
+def format_ts(ts: str) -> str:
+    """Slack epoch ts ('1721145600.0012') → 'Jul 17 15:00' (local)."""
+    try:
+        import datetime as dt
+
+        return dt.datetime.fromtimestamp(float(ts.split(".")[0])).strftime("%b %d %H:%M")
+    except (ValueError, OSError, IndexError):
+        return ""
+
+
 def clean_text(text: str, users: dict[str, str]) -> str:
     """Slack markup → readable: <@U123> → @name, <#C1|eng> → #eng,
     <http://x|label> → label, <http://x> → x; unescape entities."""
@@ -172,6 +182,22 @@ class SlackClient:
                 channel=channel_id, channel_name=f"#{channel_id}", ts=m.get("ts", ""),
                 user_name=name, text=clean_text(m.get("text", ""), self._users),
                 kind="channel", permalink=self._permalink(channel_id, m.get("ts", "")),
+            ))
+        return out
+
+    async def thread_replies(self, channel: str, ts: str) -> list[SlackMsg]:
+        """The whole thread a message belongs to (passing any message ts in the
+        thread returns all of it). A standalone message returns just itself."""
+        data = await self._call("conversations.replies", {"channel": channel, "ts": ts})
+        out: list[SlackMsg] = []
+        for m in data.get("messages", []):
+            if m.get("type") != "message":
+                continue
+            name = await self._name(m.get("user", ""))
+            out.append(SlackMsg(
+                channel=channel, channel_name="", ts=m.get("ts", ""),
+                user_name=name, text=clean_text(m.get("text", ""), self._users),
+                kind="reply", permalink=self._permalink(channel, m.get("ts", "")),
             ))
         return out
 

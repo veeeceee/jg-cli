@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from jg.slack import SlackMsg, clean_text
+from jg.slack import SlackMsg, clean_text, format_ts
 
 USERS = {"U1": "jaimon", "U2": "vibhu"}
 
@@ -38,3 +38,9 @@ def test_entities_unescaped_and_whitespace_collapsed():
 def test_jira_keys_from_text():
     m = SlackMsg("C1", "#eng", "1.0", "vibhu", "look at CH-526 and CH-9", "channel")
     assert set(m.jira_keys) == {"CH-526", "CH-9"}
+
+
+def test_format_ts_valid_and_garbage():
+    assert format_ts("1721145600.0012")  # non-empty readable string
+    assert format_ts("not-a-ts") == ""
+    assert format_ts("") == ""
