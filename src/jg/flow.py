@@ -21,12 +21,13 @@ from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, ListItem, ListView, Static
 
 from jg import reconcile as rec
 from jg.config import Config
+from jg.themes import ALL_THEMES
 
 
 def _strip_html(s: str) -> str:
@@ -236,7 +237,7 @@ class _IncomingRow(ListItem):
     def __init__(self, item: Incoming):
         self.item = item
         glyph, style = ("⇄", "magenta") if item.kind == "review" else ("⛑", "orange3")
-        line = Text("  ")
+        line = Text("▎ ", style=style)
         line.append(f"{glyph} ", style=style)
         line.append(f"{item.label:<18}", style="bold #c0caf5")
         line.append(item.detail[:58], style="#a9b1d6")
@@ -247,7 +248,7 @@ class _FlowRow(ListItem):
     def __init__(self, item: rec.ReconcileItem):
         self.item = item
         glyph, color, label = _STATE.get(item.state, (" ", "white", ""))
-        line = Text("  ")
+        line = Text("▎ ", style=color)
         line.append(f"{glyph} ", style=color)
         line.append(f"{item.key or '—':<9}", style="bold #c0caf5")
         line.append(f"{label:<11}", style=color)
@@ -258,11 +259,12 @@ class _FlowRow(ListItem):
 class _ProjectCard(ListItem):
     def __init__(self, card: Card):
         self.card = card
-        line = Text("")
+        edge = _STATE[card.state][1] if (card.state is not None and card.state in _STATE) else "#3d3d52"
+        line = Text("▎", style=edge)
         if card.state is not None and card.state in _STATE:
             g, color, _ = _STATE[card.state]
-            line.append(f"{g} ", style=color)
-        line.append(f"{card.key} ", style="bold #c0caf5")
+            line.append(f" {g}", style=color)
+        line.append(f" {card.key} ", style="bold #c0caf5")
         line.append(card.summary[:32], style="#a9b1d6")
         if card.has_pr:
             line.append("  ⎇", style="magenta")
@@ -375,18 +377,17 @@ class ProjectScreen(Screen):
     `w` opens the project workspace; `esc` returns to the flow."""
 
     DEFAULT_CSS = """
-    ProjectScreen { background: #16161e; }
+    ProjectScreen { background: $background; }
     #proj-health { height: 1; padding: 0 1; }
-    #proj-board { height: 1fr; }
-    .pcol { width: 1fr; min-width: 20; border-right: solid #2a2e42; }
-    .pcol .ch { padding: 0 1; height: 1; }
-    .pcol ListView { background: #16161e; }
-    .pcol ListView > ListItem { background: #16161e; padding: 0 1; }
-    #proj-backlog { background: #16161e; }
-    #proj-backlog > ListItem { background: #16161e; padding: 0 1; }
-    #proj-prs-h { color: #565f89; padding: 0 1; height: 1; }
-    #proj-prs { height: auto; max-height: 6; background: #16161e; }
-    #proj-prs > ListItem { background: #16161e; padding: 0; }
+    #proj-board { height: 1fr; padding: 0 1; }
+    .pcol { width: 1fr; min-width: 22; }
+    .pcol ListView { height: 1fr; background: $surface; }
+    .pcol ListView > ListItem { background: $surface; padding: 0 1; }
+    #proj-backlog { height: 1fr; background: $surface; }
+    #proj-backlog > ListItem { background: $surface; padding: 0 1; }
+    #proj-prs-h { color: $text-muted; padding: 0 1; height: 1; }
+    #proj-prs { height: auto; max-height: 6; background: $surface; }
+    #proj-prs > ListItem { background: $surface; padding: 0; }
     """
     BINDINGS = [  # noqa: RUF012
         Binding("l", "focus_right", "→ column", show=True),
@@ -446,7 +447,7 @@ class ProjectScreen(Screen):
         await self._load()
 
     async def _load(self) -> None:
-        from jg import render
+        from jg.tui import GROUP_GRADIENT, GradientPanel
 
         board = self.query_one("#proj-board", Horizontal)
         await board.remove_children()
@@ -465,7 +466,7 @@ class ProjectScreen(Screen):
                 )
             )
             lv = ListView(id="proj-backlog")
-            await board.mount(lv)
+            await board.mount(GradientPanel(lv, panel_title="BACKLOG", classes="pcol"))
             for c in cards:
                 await lv.append(_ProjectCard(c))
             lv.focus()
@@ -488,12 +489,9 @@ class ProjectScreen(Screen):
         )
         first_filled: ListView | None = None
         for group, cards in v.columns:
-            col = Vertical(classes="pcol")
-            await board.mount(col)
-            style = render.GROUP_STYLE.get(group, "white")
-            await col.mount(Static(Text(f"{group}  {len(cards)}", style=style), classes="ch"))
             lv = ListView(id=_col_id(group))
-            await col.mount(lv)
+            stops = list(GROUP_GRADIENT.get(group, [])) or None
+            await board.mount(GradientPanel(lv, panel_title=f"{group} · {len(cards)}", stops=stops, classes="pcol"))
             for c in cards:
                 await lv.append(_ProjectCard(c))
             if cards and first_filled is None:
@@ -550,15 +548,15 @@ class _RailItem(ListItem):
 
 class FlowApp(App):
     CSS = """
-    Screen { background: #16161e; }
-    #title { padding: 0 1; color: #565f89; height: 1; }
-    #body { height: 1fr; }
-    #scope { width: 18; border-right: solid #2a2e42; background: #14151d; }
-    #scope > ListItem { background: #14151d; padding: 0 1; }
-    #scope:focus > ListItem.--highlight { background: #1c1e2b; }
-    #flow { width: 1fr; background: #16161e; }
-    #flow > ListItem { background: #16161e; padding: 0; }
-    #flow:focus > ListItem.--highlight { background: #1c1e2b; }
+    Screen { background: $background; }
+    #title { padding: 0 1; color: $text-muted; height: 1; }
+    #body { height: 1fr; padding: 0 1; }
+    #scope-panel { width: 22; }
+    #flow-panel { width: 1fr; }
+    #scope, #flow { height: 1fr; background: $surface; }
+    #scope > ListItem, #flow > ListItem { background: $surface; padding: 0 1; }
+    #scope:focus > ListItem.--highlight,
+    #flow:focus > ListItem.--highlight { background: $primary 25%; }
     """
     BINDINGS = [  # noqa: RUF012
         Binding("l", "focus_right", "→ list", show=True),
@@ -582,13 +580,24 @@ class FlowApp(App):
         _shift_focus(self, self._PANELS, 1)
 
     def compose(self) -> ComposeResult:
+        from jg.tui import GradientPanel
+
         yield Static("jg · my work — incoming / in-progress / resolving   (h/l: panels · enter: jump/open · r: refresh · q: quit)", id="title")
         with Horizontal(id="body"):
-            yield ListView(id="scope")
-            yield ListView(id="flow")
+            yield GradientPanel(ListView(id="scope"), panel_title="LENS", id="scope-panel")
+            yield GradientPanel(ListView(id="flow"), panel_title="MY WORK", id="flow-panel")
         yield Footer()
 
     def on_mount(self) -> None:
+        for t in ALL_THEMES:
+            try:
+                self.register_theme(t)
+            except Exception:
+                pass
+        try:
+            self.theme = self.config.ui.theme
+        except Exception:
+            pass
         self.run_worker(self._init())
 
     async def _init(self) -> None:
