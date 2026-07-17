@@ -29,7 +29,12 @@ src/jg/
 ├── roadmap.py          # portfolio altitude: fetch epics + batch-tally child status (progress/done/blocked); effective_jql, progress_bar
 ├── gates.py            # task-typed orchestration gates (declarative GateSpec/GateOption); EPIC_DECOMPOSE + build_decompose_prompt
 ├── reconcile.py        # deterministic 3-way join (Jira status ⋈ tmux session ⋈ PR) → reconcile state; pure core + async gather
-├── cluster.py          # cross-source clustering phase 1: pure core (backbone/merge/group) + async enrich (headless `claude -p`, cached, fail-soft). jg's first LLM-result call. Logic-only, TUI-free. See docs/work-model.md
+├── llm.py              # shared headless `claude -p` helper (run_claude + extract_json_array/object) for cluster/triage/threads
+├── cluster.py          # cross-source clustering phase 1 (anchored): pure core (backbone/merge/group) + async enrich. Logic-only, TUI-free. See docs/work-model.md
+├── threads.py          # clustering phase 2: emergent durable threads over the residual (incremental join, LLM descriptors, persisted ~/.cache/jg/threads.json). Pure apply_join + async emergent()
+├── triage.py           # incoming triage: deterministic floor (classify/classify_slack) + LLM judge of the unsure middle. email + Slack
+├── gmail.py            # Gmail ingestion (OAuth read-only): messages/threads + MIME body extract. jg gmail
+├── slack.py            # Slack ingestion (user token): DMs/mentions/channels + thread replies + markup cleaning. jg slack
 ├── progress.py         # reads/updates ~/.ai/progress.json (scaffolding level per pattern); read_level, record_use
 ├── tui.py              # ChDashboard — the 3-panel `jg dashboard` (kanban + PR sidebar + rich markdown detail modals + editing + notifier) — the primary TUI. Also home to GradientPanel, themes glue, and all the action/detail/gate modals.
 └── commands/           # one click command per file

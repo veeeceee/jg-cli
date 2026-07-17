@@ -376,6 +376,15 @@ Deferred to phase 2/3: emergent durable-thread objects, stickiness, manual
 re-audit, promotion + ratification at the escalate gate, Slack/email sources,
 split/merge correction UI.
 
+**Shipped since:** phase-1 anchored clustering (`cluster.py`), incoming triage
+floor + LLM judge over email **and** Slack (`triage.py`), Gmail + Slack ingestion
+(`gmail.py`/`slack.py`), and **phase-2 emergent durable threads** (`threads.py`):
+incremental join over the unanchored residual, LLM-authored descriptors, persisted
+to `~/.cache/jg/threads.json`, join+spawn only. Still deferred: merge/split of
+established threads, descriptor updates, promotion+ratification at the escalate
+gate, manual re-audit, staleness cleanup, and the triage correction loop
+(rescue/suppress → durable floor rule).
+
 ## Incoming triage (second LLM investment)
 
 The incoming bucket is mostly noise — the real snapshot ran ~5 signal in ~30
