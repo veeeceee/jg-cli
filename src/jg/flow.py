@@ -813,7 +813,34 @@ class FlowApp(App):
         self._incoming, self._ip, self._res = incoming, in_progress, resolving
         self._clusters, self._residual = None, []   # reset grouping for the new pile
         await self._render_flow()                    # deterministic floor — instant
-        self.run_worker(self._cluster_overlay())     # LLM grouping — arrives later
+        self.run_worker(self._enrich())              # LLM layer — arrives later
+
+    async def _enrich(self) -> None:
+        """Progressive LLM enhancement over the instant floor: first the triage
+        judge resolves the unsure middle, then clustering groups the surfaced."""
+        await self._triage_judge()
+        await self._cluster_overlay()
+
+    async def _triage_judge(self) -> None:
+        """LLM-judge the triage-unsure email (conservative). Fail-soft."""
+        from jg import triage
+
+        unsure = [i for i in self._incoming if i.triage == "unsure" and i.kind == "email"]
+        if not unsure:
+            return
+        items = [triage.JudgeItem(id=i.ref, sender=i.label, subject=i.detail) for i in unsure]
+        try:
+            verdicts = await triage.judge(items, claude_path=self.config.ai.claude_path)
+        except Exception:
+            return
+        changed = False
+        for i in unsure:
+            v = verdicts.get(i.ref)
+            if v and v != i.triage:
+                i.triage, i.triage_reason = v, "llm-judged"
+                changed = True
+        if changed:
+            await self._render_flow()
 
     def _surfaced(self) -> list[Incoming]:
         return [i for i in self._incoming if i.triage != "suppressed"]

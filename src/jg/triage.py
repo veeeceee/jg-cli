@@ -13,9 +13,14 @@ pre-filtered signal and bypass triage entirely. See docs/work-model.md →
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
+
+CACHE_DIR = Path.home() / ".cache" / "jg"
+CACHE_FILE = CACHE_DIR / "triage.json"  # {message_id: "actionable"|"suppressed"}
 
 
 class Verdict(StrEnum):
@@ -83,3 +88,71 @@ def classify(
         return TriageResult(Verdict.ACTIONABLE, "addressed to you")
     # 6. Human-looking message, no clear marker → the ambiguous middle; surface.
     return TriageResult(Verdict.UNSURE, "no clear marker")
+
+
+# ── LLM judge of the ambiguous middle (async, conservative, cached) ─────────────
+@dataclass
+class JudgeItem:
+    id: str        # message id — the stable cache key
+    sender: str
+    subject: str
+
+
+def _build_judge_prompt(items: list[JudgeItem]) -> str:
+    lines = "\n".join(f"- {it.id}: from {it.sender} — {it.subject}" for it in items)
+    return (
+        "You triage ambiguous emails into actionable vs suppressed.\n"
+        "- actionable = a real message needing my attention: a human reply, a "
+        "direct question/request, a discussion I'm part of, a review/mention of me.\n"
+        "- suppressed = automated noise with no human ask: bot/CI notifications, "
+        "star/watch/digest emails, marketing, status pings.\n\n"
+        "BIAS STRONGLY toward actionable — a missed real message is far worse than "
+        "a newsletter slipping through. Only suppress when clearly automated noise.\n\n"
+        f"EMAILS:\n{lines}\n\n"
+        "Return ONLY a JSON array, one object per email, no prose:\n"
+        '[{"id":"<id>","verdict":"actionable|suppressed","reason":"<short>"}]'
+    )
+
+
+def _cache_read() -> dict[str, str]:
+    try:
+        blob = json.loads(CACHE_FILE.read_text())
+        return blob if isinstance(blob, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _cache_write(verdicts: dict[str, str]) -> None:
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        CACHE_FILE.write_text(json.dumps(verdicts))
+    except OSError:
+        pass
+
+
+async def judge(
+    items: list[JudgeItem], *, claude_path: str = "claude", use_cache: bool = True
+) -> dict[str, str]:
+    """Classify the unsure middle via a conservative `claude -p` call. Verdicts
+    are cached per message id so they don't flicker between refreshes. Anything
+    the LLM doesn't resolve defaults to actionable (surface) — never suppress on
+    doubt. Fail-soft: on any error every item stays actionable."""
+    from jg import llm
+
+    cache = _cache_read() if use_cache else {}
+    verdicts: dict[str, str] = {it.id: cache[it.id] for it in items if it.id in cache}
+    todo = [it for it in items if it.id not in verdicts]
+    if todo:
+        try:
+            text = await llm.run_claude(_build_judge_prompt(todo), claude_path)
+            for row in llm.extract_json_array(text):
+                iid, v = row.get("id"), row.get("verdict")
+                if iid and v in ("actionable", "suppressed"):
+                    verdicts[iid] = v
+        except Exception:
+            pass  # fail-soft: unresolved items fall through to actionable below
+        if use_cache and verdicts:
+            merged = {**cache, **verdicts}
+            _cache_write(merged)
+    # conservative default — surface anything the LLM didn't resolve
+    return {it.id: verdicts.get(it.id, str(Verdict.ACTIONABLE)) for it in items}

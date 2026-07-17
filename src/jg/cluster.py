@@ -24,10 +24,8 @@ deliberately TUI-free so it ports cleanly if jg ever moves to Go.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
-import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -202,40 +200,6 @@ def _build_prompt(loose: list[Item], anchors: list[Anchor]) -> str:
     )
 
 
-def _extract_json_array(text: str) -> list[dict]:
-    """Pull the JSON array out of the model's text (tolerating ``` fences)."""
-    t = (text or "").strip()
-    t = re.sub(r"^```(?:json)?", "", t).strip()
-    t = re.sub(r"```$", "", t).strip()
-    i, j = t.find("["), t.rfind("]")
-    if i == -1 or j == -1 or j < i:
-        return []
-    try:
-        data = json.loads(t[i : j + 1])
-    except json.JSONDecodeError:
-        return []
-    return data if isinstance(data, list) else []
-
-
-async def _run_claude(prompt: str, claude_path: str = "claude") -> str:
-    """Run `claude -p --output-format json` (prompt on stdin) and return the
-    assistant's result text out of the JSON envelope."""
-    proc = await asyncio.create_subprocess_exec(
-        claude_path, "-p", "--output-format", "json",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    out, err = await proc.communicate(prompt.encode())
-    if proc.returncode != 0:
-        raise ClusterError(f"claude -p exited {proc.returncode}: {err.decode()[:200]}")
-    try:
-        envelope = json.loads(out.decode())
-    except json.JSONDecodeError as e:
-        raise ClusterError(f"claude -p returned non-JSON: {e}") from e
-    return envelope.get("result", "") if isinstance(envelope, dict) else ""
-
-
 def _cache_key(loose: list[Item], anchors: list[Anchor]) -> str:
     h = hashlib.sha256()
     h.update("|".join(sorted(it.id for it in loose)).encode())
@@ -276,8 +240,10 @@ async def _assign_loose(
         cached = _cache_read(key)
         if cached is not None:
             return cached
-    text = await _run_claude(_build_prompt(loose, anchors), claude_path)
-    rows = _extract_json_array(text)
+    from jg import llm
+
+    text = await llm.run_claude(_build_prompt(loose, anchors), claude_path)
+    rows = llm.extract_json_array(text)
     if use_cache and rows:
         _cache_write(key, rows)
     return rows

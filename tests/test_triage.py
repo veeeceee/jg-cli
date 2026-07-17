@@ -3,7 +3,11 @@ hard SUPPRESSED verdict hides an item."""
 
 from __future__ import annotations
 
-from jg.triage import Verdict, classify
+import asyncio
+
+import jg.llm
+from jg import triage
+from jg.triage import JudgeItem, Verdict, classify
 
 ME = ["vibhu@charmhealthtech.com"]
 
@@ -68,3 +72,25 @@ def test_precedence_order_signal_before_noise():
 def test_no_my_addresses_falls_through_safely():
     r = _c('"Person" <p@x.com>', to_cc="p@x.com", me=[])
     assert r.verdict is Verdict.UNSURE  # not crash; surfaces
+
+
+# ── the LLM judge (stubbed claude) ──────────────────────────────────────────────
+def test_judge_parses_verdicts_and_defaults_conservative(monkeypatch):
+    async def fake_run(prompt, claude_path="claude"):
+        return '[{"id":"a","verdict":"suppressed"},{"id":"b","verdict":"actionable"}]'
+
+    monkeypatch.setattr(jg.llm, "run_claude", fake_run)
+    items = [JudgeItem("a", "x", "s"), JudgeItem("b", "y", "t"), JudgeItem("c", "z", "u")]
+    out = asyncio.run(triage.judge(items, use_cache=False))
+    assert out["a"] == "suppressed"
+    assert out["b"] == "actionable"
+    assert out["c"] == "actionable"  # unresolved → surfaces (never suppress on doubt)
+
+
+def test_judge_is_failsoft(monkeypatch):
+    async def boom(prompt, claude_path="claude"):
+        raise RuntimeError("claude down")
+
+    monkeypatch.setattr(jg.llm, "run_claude", boom)
+    out = asyncio.run(triage.judge([JudgeItem("a", "x", "s")], use_cache=False))
+    assert out == {"a": "actionable"}  # everything stays surfaced on failure

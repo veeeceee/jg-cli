@@ -7,11 +7,11 @@ from jg.cluster import (
     Anchor,
     EdgeKind,
     Item,
-    _extract_json_array,
     build_backbone,
     group,
     merge_llm_edges,
 )
+from jg.llm import extract_json_array
 
 ANCHORS = [Anchor("CH-1", "Nabla AI-scribe integration"), Anchor("CH-2", "Billing codes")]
 
@@ -122,7 +122,7 @@ def test_authored_edge_to_non_anchor_forms_no_cluster():
 
 
 def test_extract_json_array_tolerates_fences_and_prose():
-    assert _extract_json_array('```json\n[{"a":1}]\n```') == [{"a": 1}]
-    assert _extract_json_array('here you go: [{"x":2}] done') == [{"x": 2}]
-    assert _extract_json_array("not json at all") == []
-    assert _extract_json_array("") == []
+    assert extract_json_array('```json\n[{"a":1}]\n```') == [{"a": 1}]
+    assert extract_json_array('here you go: [{"x":2}] done') == [{"x": 2}]
+    assert extract_json_array("not json at all") == []
+    assert extract_json_array("") == []
