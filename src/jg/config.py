@@ -113,6 +113,23 @@ class ZohoConfig:
 
 
 @dataclass
+class GmailConfig:
+    """Gmail ingestion via the Gmail API (OAuth, read-only).
+
+    `client_id` is jg's own Google OAuth client (Desktop app); the secret +
+    tokens live in Keychain. jg only ever requests `gmail.readonly`. `query` is
+    the Gmail search that scopes what lands in the incoming pile — kept
+    signal-heavy by default so it doesn't flood before triage exists."""
+    client_id: str = ""
+    query: str = "is:unread -category:promotions -category:social -category:forums newer_than:7d"
+    max_results: int = 40
+
+    @property
+    def is_setup(self) -> bool:
+        return bool(self.client_id)
+
+
+@dataclass
 class RoadmapConfig:
     """Portfolio/roadmap altitude. `jql` selects which epics appear; empty means
     derive from the default Jira project (see roadmap.effective_jql)."""
@@ -172,6 +189,7 @@ class Config:
     fields: FieldsConfig = field(default_factory=FieldsConfig)
     roadmap: RoadmapConfig = field(default_factory=RoadmapConfig)
     zoho: ZohoConfig = field(default_factory=ZohoConfig)
+    gmail: GmailConfig = field(default_factory=GmailConfig)
     projects: list[Project] = field(default_factory=list)
 
     # ── Back-compat delegating properties ──────────────────────────────────
@@ -291,6 +309,11 @@ class Config:
                 "accounts_url": self.zoho.accounts_url,
                 "api_base": self.zoho.api_base,
             },
+            "gmail": {
+                "client_id": self.gmail.client_id,
+                "query": self.gmail.query,
+                "max_results": self.gmail.max_results,
+            },
         }
         if self.projects:
             data["projects"] = [self._project_to_dict(p) for p in self.projects]
@@ -349,6 +372,7 @@ class Config:
         fields_raw = data.get("fields", {})
         roadmap_raw = data.get("roadmap", {})
         zoho_raw = data.get("zoho", {})
+        gmail_raw = data.get("gmail", {})
         return cls(
             atlassian=atlassian,
             tmux=TmuxConfig(
@@ -378,6 +402,11 @@ class Config:
                 agent_emails=list(zoho_raw.get("agent_emails") or []),
                 accounts_url=zoho_raw.get("accounts_url", "https://accounts.zoho.com"),
                 api_base=zoho_raw.get("api_base", "https://desk.zoho.com/api/v1"),
+            ),
+            gmail=GmailConfig(
+                client_id=gmail_raw.get("client_id", ""),
+                query=gmail_raw.get("query", GmailConfig().query),
+                max_results=int(gmail_raw.get("max_results", 40)),
             ),
             projects=[cls._project_from_dict(p) for p in (data.get("projects") or [])],
         )

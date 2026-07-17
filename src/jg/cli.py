@@ -54,6 +54,7 @@ def _register() -> None:
         dashboard,
         edit,
         flow,
+        gmail,
         link,
         points,
         pr,
@@ -90,6 +91,7 @@ def _register() -> None:
     cli.add_command(cluster.cluster)
     cli.add_command(reconcile.reconcile)
     cli.add_command(zoho.zoho)
+    cli.add_command(gmail.gmail)
     cli.add_command(dashboard.dashboard)
 
 

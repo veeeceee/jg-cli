@@ -159,13 +159,32 @@ async def gather_flow(config: Config) -> tuple[list[Incoming], list[rec.Reconcil
             if (t.status or "").lower() != "closed"
         ]
 
-    items_r, review_r, zoho_r = await asyncio.gather(
-        rec.gather(config), _review_prs(), _zoho(), return_exceptions=True
+    async def _gmail() -> list[Incoming]:
+        from jg import gmail
+
+        if not config.gmail.is_setup:
+            return []
+        async with gmail.GmailClient(config) as gc:
+            msgs = await gc.recent()
+        # No authored keys: a Jira key in an email subject is a weak *mention*,
+        # not an authored link (cf. a PR branch). Let the LLM place emails by
+        # content — the subject/detail it reads already contains any key.
+        return [
+            Incoming("email", gmail.sender_name(m.sender), m.subject, m.web_url, ref=m.id)
+            for m in msgs
+        ]
+
+    items_r, review_r, zoho_r, gmail_r = await asyncio.gather(
+        rec.gather(config), _review_prs(), _zoho(), _gmail(), return_exceptions=True
     )
     items = items_r if isinstance(items_r, list) else []
     in_progress = [i for i in items if i.state in _IN_PROGRESS]
     resolving = [i for i in items if i.state in _RESOLVING]
-    incoming = (review_r if isinstance(review_r, list) else []) + (zoho_r if isinstance(zoho_r, list) else [])
+    incoming = (
+        (review_r if isinstance(review_r, list) else [])
+        + (zoho_r if isinstance(zoho_r, list) else [])
+        + (gmail_r if isinstance(gmail_r, list) else [])
+    )
     return incoming, in_progress, resolving
 
 
@@ -299,9 +318,15 @@ class _ClusterHead(ListItem):
 
 
 class _IncomingRow(ListItem):
+    _GLYPH: ClassVar[dict[str, tuple[str, str]]] = {
+        "review": ("⇄", "magenta"),
+        "zoho": ("⛑", "orange3"),
+        "email": ("✉", "#7aa2f7"),
+    }
+
     def __init__(self, item: Incoming, edge: cl.Edge | None = None):
         self.item = item
-        glyph, style = ("⇄", "magenta") if item.kind == "review" else ("⛑", "orange3")
+        glyph, style = self._GLYPH.get(item.kind, ("•", "dim"))
         # nested under a cluster head → indent + dim edge bar; else the normal bar
         line = Text("      " if edge else "▎ ", style="#3d3d52" if edge else style)
         line.append(f"{glyph} ", style=style)
@@ -804,10 +829,11 @@ class FlowApp(App):
         incoming = self._incoming
         if not incoming:
             return
+        kind_map = {"review": "pr", "zoho": "zoho", "email": "email"}
         items = [
             cl.Item(
                 id=i.cid,
-                kind="pr" if i.kind == "review" else "zoho",
+                kind=kind_map.get(i.kind, i.kind),
                 label=i.label,
                 detail=i.detail,
                 linked_keys=i.keys,
