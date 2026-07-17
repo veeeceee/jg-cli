@@ -442,6 +442,15 @@ def _col_id(group: str) -> str:
     return "c-" + re.sub(r"[^a-z0-9]+", "-", group.lower()).strip("-")
 
 
+def _row_identity(row: object) -> tuple[str, str] | None:
+    """A stable token for a flow row, so selection survives a list re-render."""
+    if isinstance(row, _FlowRow):
+        return ("flow", row.item.key or row.item.session_title or "")
+    if isinstance(row, _IncomingRow):
+        return ("inc", row.item.cid)
+    return None
+
+
 class ProjectScreen(Screen):
     """The per-plan dashboard lens: health + current-sprint board (real workflow
     columns, reconcile on cards) + PRs. `b` toggles to the ranked backlog list.
@@ -531,10 +540,19 @@ class ProjectScreen(Screen):
 
         try:
             async with JiraClient(self.config) as api:
-                self._sprints = await api.get_sprints(board_id)
+                sprints = await api.get_sprints(board_id, state="active,future,closed")
         except Exception as e:
             self.notify(f"sprints unavailable: {type(e).__name__}", severity="error")
             return
+        # active + future in API order, then the most-recent closed (bounded — a
+        # board can have dozens of closed sprints).
+        active_future = [s for s in sprints if (s.get("state") or "").lower() != "closed"]
+        closed = sorted(
+            (s for s in sprints if (s.get("state") or "").lower() == "closed"),
+            key=lambda s: s.get("id", 0),
+            reverse=True,
+        )[:8]
+        self._sprints = active_future + closed
         from jg.tui import SprintPickerModal
 
         self.app.push_screen(
@@ -741,8 +759,12 @@ class FlowApp(App):
         self, clusters: list[cl.Cluster] | None = None, residual: list[cl.Item] | None = None
     ) -> None:
         """Render the flow list. Floor: incoming flat. Overlay: incoming grouped
-        under cluster anchors, residual flat. In-progress/resolving unchanged."""
+        under cluster anchors, residual flat. In-progress/resolving unchanged.
+
+        Preserves the highlighted row across a re-render (by identity, not index)
+        so the async cluster overlay landing doesn't yank the cursor to the top."""
         lv = self.query_one("#flow", ListView)
+        prev = _row_identity(lv.highlighted_child)
         await lv.clear()
         await lv.append(_Header(f"INCOMING ({len(self._incoming)})"))
         if clusters is None:
@@ -766,8 +788,15 @@ class FlowApp(App):
         await lv.append(_Header(f"RESOLVING ({len(self._res)})"))
         for i in self._res:
             await lv.append(_FlowRow(i))
-        if len(lv.children):
-            lv.index = 0
+        if not len(lv.children):
+            return
+        restored = 0
+        if prev is not None:
+            for i, child in enumerate(lv.children):
+                if _row_identity(child) == prev:
+                    restored = i
+                    break
+        lv.index = restored
 
     async def _cluster_overlay(self) -> None:
         """Async LLM grouping of the incoming pile. Fail-soft: on any problem or

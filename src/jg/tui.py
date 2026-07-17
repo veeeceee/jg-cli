@@ -816,8 +816,9 @@ class SprintPickerModal(ModalScreen[tuple[str, int | None] | None]):
         for s in self.sprints:
             row = Text()
             state = (s.get("state") or "").lower()
-            badge = "active" if state == "active" else "future"
-            row.append(f" {badge} ", style="reverse" if state == "active" else "dim")
+            badge = state or "future"
+            badge_style = "reverse" if state == "active" else ("dim strike" if state == "closed" else "dim")
+            row.append(f" {badge} ", style=badge_style)
             row.append("  ")
             row.append_text(gradient_text(s.get("name", "?"), *CHROME_GRADIENT, bold=True))
             items.append(ListItem(Static(row)))
