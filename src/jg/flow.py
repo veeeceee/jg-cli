@@ -364,7 +364,7 @@ class _IncomingRow(ListItem):
         "slack": ("✳", "#89ddff"),
     }
 
-    def __init__(self, item: Incoming, edge: cl.Edge | None = None, dim: bool = False):
+    def __init__(self, item: Incoming, edge: cl.Edge | None = None, dim: bool = False, nested: bool = False):
         self.item = item
         glyph, style = self._GLYPH.get(item.kind, ("•", "dim"))
         if dim:  # a triage-suppressed row shown under the expanded "N filtered" line
@@ -372,6 +372,14 @@ class _IncomingRow(ListItem):
             line.append(f"{glyph} ", style="dim")
             line.append(f"{item.label:<18}", style="#565f89")
             line.append(item.detail[:40], style="#3d3d52")
+            super().__init__(Static(line))
+            return
+        if nested:  # member of an emergent thread — indent + soft marker
+            line = Text("      ", style="#3d3d52")
+            line.append(f"{glyph} ", style=style)
+            line.append(f"{item.label:<18}", style="bold #c0caf5")
+            line.append(item.detail[:40], style="#a9b1d6")
+            line.append("  ~", style="#bb9af7")
             super().__init__(Static(line))
             return
         # nested under a cluster head → indent + dim edge bar; else the normal bar
@@ -385,6 +393,15 @@ class _IncomingRow(ListItem):
             if soft:
                 line.append(f"{edge.confidence:.1f}", style="#565f89")
         super().__init__(Static(line))
+
+
+class _ThreadHead(ListItem):
+    """Sub-header inside INCOMING: an emergent durable thread (no Jira anchor)."""
+    def __init__(self, descriptor: str, n: int):
+        t = Text("  ⧉ ", style="#bb9af7")
+        t.append(descriptor[:52], style="bold #bb9af7")
+        t.append(f"  ({n})", style="#565f89")
+        super().__init__(Static(t))
 
 
 class _FilteredRow(ListItem):
@@ -916,6 +933,7 @@ class FlowApp(App):
         self._show_filtered = False  # triage: expand the suppressed "N filtered" line
         self._clusters: list[cl.Cluster] | None = None
         self._residual: list[cl.Item] = []
+        self._threads: list = []  # emergent durable threads (jg.threads.Thread)
 
     def action_focus_left(self) -> None:
         _shift_focus(self, self._PANELS, -1)
@@ -1023,15 +1041,24 @@ class FlowApp(App):
                 await lv.append(_IncomingRow(i))
         else:
             by_cid = {i.cid: i for i in surfaced}
-            for c in self._clusters:
+            for c in self._clusters:                      # anchored clusters
                 await lv.append(_ClusterHead(c.anchor_key, c.summary))
                 for m in c.members:
                     inc = by_cid.get(m.id)
                     if inc is not None:
                         await lv.append(_IncomingRow(inc, edge=m.edge))
-            for it in self._residual:
+            threaded: set[str] = set()
+            for t in self._threads:                       # emergent durable threads
+                present = [by_cid[m] for m in t.members if m in by_cid]
+                if not present:
+                    continue
+                await lv.append(_ThreadHead(t.descriptor, len(present)))
+                for inc in present:
+                    await lv.append(_IncomingRow(inc, nested=True))
+                    threaded.add(inc.cid)
+            for it in self._residual:                     # loose (unthreaded) residual
                 inc = by_cid.get(it.id)
-                if inc is not None:
+                if inc is not None and inc.cid not in threaded:
                     await lv.append(_IncomingRow(inc))
         if suppressed:
             await lv.append(_FilteredRow(len(suppressed), self._show_filtered))
@@ -1073,14 +1100,32 @@ class FlowApp(App):
             for i in surfaced
         ]
         anchors = await gather_flow_anchors(self.config)
-        if not anchors:
-            return
+        clusters: list[cl.Cluster] = []
+        residual: list[cl.Item] = items          # default: nothing anchored
+        if anchors:
+            try:
+                result = await cl.enrich(items, anchors, claude_path=self.config.ai.claude_path)
+                clusters, residual = result.clusters, result.residual
+            except Exception:
+                pass
+
+        # Emergent durable threads over the unanchored residual (incremental).
+        import datetime as dt
+
+        from jg import threads as th
+
+        eitems = [th.EItem(id=it.id, kind=it.kind, label=it.label, detail=it.detail) for it in residual]
+        thread_objs: list = []
         try:
-            result = await cl.enrich(items, anchors, claude_path=self.config.ai.claude_path)
+            thread_objs = await th.emergent(
+                eitems, now=dt.datetime.now().isoformat(timespec="seconds"),
+                claude_path=self.config.ai.claude_path,
+            )
         except Exception:
-            return
-        if result.clusters:
-            self._clusters, self._residual = result.clusters, result.residual
+            pass
+
+        self._clusters, self._residual, self._threads = clusters, residual, thread_objs
+        if clusters or thread_objs:
             await self._render_flow()
 
     @on(ListView.Selected)

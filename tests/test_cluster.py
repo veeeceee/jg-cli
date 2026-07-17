@@ -11,7 +11,7 @@ from jg.cluster import (
     group,
     merge_llm_edges,
 )
-from jg.llm import extract_json_array
+from jg.llm import extract_json_array, extract_json_object
 
 ANCHORS = [Anchor("CH-1", "Nabla AI-scribe integration"), Anchor("CH-2", "Billing codes")]
 
@@ -126,3 +126,10 @@ def test_extract_json_array_tolerates_fences_and_prose():
     assert extract_json_array('here you go: [{"x":2}] done') == [{"x": 2}]
     assert extract_json_array("not json at all") == []
     assert extract_json_array("") == []
+
+
+def test_extract_json_object_tolerates_fences_and_prose():
+    assert extract_json_object('```json\n{"a":1}\n```') == {"a": 1}
+    assert extract_json_object('sure: {"x":[1,2]} ok') == {"x": [1, 2]}
+    assert extract_json_object("[1,2,3]") == {}  # an array is not an object
+    assert extract_json_object("nope") == {}

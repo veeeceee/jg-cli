@@ -35,11 +35,15 @@ async def run_claude(prompt: str, claude_path: str = "claude") -> str:
     return envelope.get("result", "") if isinstance(envelope, dict) else ""
 
 
-def extract_json_array(text: str) -> list[dict]:
-    """Pull a JSON array out of the model's text (tolerating ``` fences / prose)."""
+def _strip_fences(text: str) -> str:
     t = (text or "").strip()
     t = re.sub(r"^```(?:json)?", "", t).strip()
-    t = re.sub(r"```$", "", t).strip()
+    return re.sub(r"```$", "", t).strip()
+
+
+def extract_json_array(text: str) -> list[dict]:
+    """Pull a JSON array out of the model's text (tolerating ``` fences / prose)."""
+    t = _strip_fences(text)
     i, j = t.find("["), t.rfind("]")
     if i == -1 or j == -1 or j < i:
         return []
@@ -48,3 +52,16 @@ def extract_json_array(text: str) -> list[dict]:
     except json.JSONDecodeError:
         return []
     return data if isinstance(data, list) else []
+
+
+def extract_json_object(text: str) -> dict:
+    """Pull a JSON object out of the model's text (tolerating ``` fences / prose)."""
+    t = _strip_fences(text)
+    i, j = t.find("{"), t.rfind("}")
+    if i == -1 or j == -1 or j < i:
+        return {}
+    try:
+        data = json.loads(t[i : j + 1])
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
