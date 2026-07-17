@@ -162,18 +162,28 @@ async def gather_flow(config: Config) -> tuple[list[Incoming], list[rec.Reconcil
         ]
 
     async def _slack() -> list[Incoming]:
-        from jg import slack
+        from jg import slack, triage
 
         if not slack.is_setup():
             return []
         async with slack.SlackClient(config) as sc:
             msgs = await sc.incoming()
-        # DMs/mentions/followed-channels are all things you opted into → actionable.
-        # A Jira key in a Slack message is a weak mention (no authored keys).
-        return [
-            Incoming("slack", m.channel_name, m.text, m.permalink, ref=f"{m.channel}:{m.ts}")
-            for m in msgs
-        ]
+        # Triage floor: DMs → actionable, noise/signal channels decide, other
+        # channel @mentions → unsure (LLM judges work-vs-social). A Jira key in a
+        # Slack message is a weak mention, so no authored keys.
+        out: list[Incoming] = []
+        for m in msgs:
+            v = triage.classify_slack(
+                kind=m.kind,
+                channel_name=m.channel_name,
+                noise_channels=config.triage.noise_channels,
+                signal_channels=config.triage.signal_channels,
+            )
+            out.append(
+                Incoming("slack", m.channel_name, m.text, m.permalink, ref=f"{m.channel}:{m.ts}",
+                         triage=str(v.verdict), triage_reason=v.reason)
+            )
+        return out
 
     async def _gmail() -> list[Incoming]:
         from jg import gmail, triage
@@ -967,7 +977,7 @@ class FlowApp(App):
         """LLM-judge the triage-unsure email (conservative). Fail-soft."""
         from jg import triage
 
-        unsure = [i for i in self._incoming if i.triage == "unsure" and i.kind == "email"]
+        unsure = [i for i in self._incoming if i.triage == "unsure" and i.kind in ("email", "slack")]
         if not unsure:
             return
         items = [triage.JudgeItem(id=i.ref, sender=i.label, subject=i.detail) for i in unsure]

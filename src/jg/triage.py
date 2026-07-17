@@ -90,6 +90,26 @@ def classify(
     return TriageResult(Verdict.UNSURE, "no clear marker")
 
 
+def classify_slack(
+    *,
+    kind: str,
+    channel_name: str,
+    noise_channels: list[str],
+    signal_channels: list[str],
+) -> TriageResult:
+    """Slack floor: a DM is direct-to-me signal; a configured signal/noise channel
+    decides; anything else (a channel @mention) is the ambiguous middle for the
+    LLM to judge work-vs-social. Channel match is substring on the name (# optional)."""
+    name = (channel_name or "").lstrip("#").lower()
+    if kind == "dm":
+        return TriageResult(Verdict.ACTIONABLE, "direct message")
+    if any(c.lstrip("#").lower() in name for c in signal_channels if c):
+        return TriageResult(Verdict.ACTIONABLE, "signal channel")
+    if any(c.lstrip("#").lower() in name for c in noise_channels if c):
+        return TriageResult(Verdict.SUPPRESSED, "noise channel")
+    return TriageResult(Verdict.UNSURE, "channel mention")
+
+
 # ── LLM judge of the ambiguous middle (async, conservative, cached) ─────────────
 @dataclass
 class JudgeItem:
@@ -101,15 +121,15 @@ class JudgeItem:
 def _build_judge_prompt(items: list[JudgeItem]) -> str:
     lines = "\n".join(f"- {it.id}: from {it.sender} — {it.subject}" for it in items)
     return (
-        "You triage ambiguous emails into actionable vs suppressed.\n"
+        "You triage ambiguous messages (email or chat) into actionable vs suppressed.\n"
         "- actionable = a real message needing my attention: a human reply, a "
-        "direct question/request, a discussion I'm part of, a review/mention of me.\n"
-        "- suppressed = automated noise with no human ask: bot/CI notifications, "
-        "star/watch/digest emails, marketing, status pings.\n\n"
+        "direct question/request, a work discussion I'm part of, a review/mention of me.\n"
+        "- suppressed = noise with no work ask: bot/CI notifications, star/watch/"
+        "digest emails, marketing, status pings, and pure social chit-chat/banter.\n\n"
         "BIAS STRONGLY toward actionable — a missed real message is far worse than "
-        "a newsletter slipping through. Only suppress when clearly automated noise.\n\n"
-        f"EMAILS:\n{lines}\n\n"
-        "Return ONLY a JSON array, one object per email, no prose:\n"
+        "a newsletter or a bit of banter slipping through. Only suppress when clearly noise.\n\n"
+        f"MESSAGES:\n{lines}\n\n"
+        "Return ONLY a JSON array, one object per message, no prose:\n"
         '[{"id":"<id>","verdict":"actionable|suppressed","reason":"<short>"}]'
     )
 

@@ -144,8 +144,10 @@ class TriageConfig:
     auto-includes the authenticated Gmail address at runtime. All user-editable —
     the floor grows from corrections."""
     my_addresses: list[str] = field(default_factory=list)
-    signal_senders: list[str] = field(default_factory=list)  # → actionable (overrides bulk)
-    noise_senders: list[str] = field(default_factory=list)   # → suppressed
+    signal_senders: list[str] = field(default_factory=list)   # email From → actionable
+    noise_senders: list[str] = field(default_factory=list)    # email From → suppressed
+    signal_channels: list[str] = field(default_factory=list)  # Slack channel → actionable
+    noise_channels: list[str] = field(default_factory=list)   # Slack channel → suppressed
 
 
 @dataclass
@@ -342,6 +344,8 @@ class Config:
                 "my_addresses": self.triage.my_addresses,
                 "signal_senders": self.triage.signal_senders,
                 "noise_senders": self.triage.noise_senders,
+                "signal_channels": self.triage.signal_channels,
+                "noise_channels": self.triage.noise_channels,
             },
         }
         if self.projects:
@@ -444,6 +448,8 @@ class Config:
                 my_addresses=list(triage_raw.get("my_addresses") or []),
                 signal_senders=list(triage_raw.get("signal_senders") or []),
                 noise_senders=list(triage_raw.get("noise_senders") or []),
+                signal_channels=list(triage_raw.get("signal_channels") or []),
+                noise_channels=list(triage_raw.get("noise_channels") or []),
             ),
             projects=[cls._project_from_dict(p) for p in (data.get("projects") or [])],
         )

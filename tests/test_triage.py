@@ -7,7 +7,7 @@ import asyncio
 
 import jg.llm
 from jg import triage
-from jg.triage import JudgeItem, Verdict, classify
+from jg.triage import JudgeItem, Verdict, classify, classify_slack
 
 ME = ["vibhu@charmhealthtech.com"]
 
@@ -72,6 +72,32 @@ def test_precedence_order_signal_before_noise():
 def test_no_my_addresses_falls_through_safely():
     r = _c('"Person" <p@x.com>', to_cc="p@x.com", me=[])
     assert r.verdict is Verdict.UNSURE  # not crash; surfaces
+
+
+# ── Slack floor ─────────────────────────────────────────────────────────────────
+def test_slack_dm_is_actionable():
+    r = classify_slack(kind="dm", channel_name="DM: Jaimon", noise_channels=[], signal_channels=[])
+    assert r.verdict is Verdict.ACTIONABLE
+
+
+def test_slack_noise_channel_suppressed():
+    r = classify_slack(kind="mention", channel_name="#the-ratpack", noise_channels=["the-ratpack"], signal_channels=[])
+    assert r.verdict is Verdict.SUPPRESSED
+
+
+def test_slack_signal_channel_actionable():
+    r = classify_slack(kind="channel", channel_name="#dev-team", noise_channels=[], signal_channels=["dev-team"])
+    assert r.verdict is Verdict.ACTIONABLE
+
+
+def test_slack_other_mention_is_unsure():
+    r = classify_slack(kind="mention", channel_name="#some-work-chan", noise_channels=[], signal_channels=[])
+    assert r.verdict is Verdict.UNSURE
+
+
+def test_slack_channel_match_tolerates_hash_prefix():
+    r = classify_slack(kind="mention", channel_name="#the-ratpack", noise_channels=["#the-ratpack"], signal_channels=[])
+    assert r.verdict is Verdict.SUPPRESSED
 
 
 # ── the LLM judge (stubbed claude) ──────────────────────────────────────────────
