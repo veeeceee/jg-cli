@@ -173,6 +173,14 @@ class SlackClient:
                 ))
         return out
 
+    async def _channel_label(self, ch: dict) -> tuple[str, str]:
+        """(display name, kind) for a search-result channel. A DM (is_im) has its
+        `name` set to the peer's *user id*, so resolve it to 'DM: <name>' and mark
+        it a dm (→ actionable), not a channel mention showing a raw id."""
+        if ch.get("is_im"):
+            return f"DM: {await self._name(ch.get('user', ''))}", "dm"
+        return f"#{ch.get('name') or ch.get('id', '?')}", "mention"
+
     async def mentions(self, user_id: str, count: int = 20) -> list[SlackMsg]:
         # search.messages indexes the rendered mention, so the handle finds them.
         handle = await self._name(user_id)
@@ -180,11 +188,12 @@ class SlackClient:
         out: list[SlackMsg] = []
         for m in data.get("messages", {}).get("matches", []):
             ch = m.get("channel", {})
+            cname, kind = await self._channel_label(ch)
             out.append(SlackMsg(
-                channel=ch.get("id", ""), channel_name=f"#{ch.get('name', '?')}", ts=m.get("ts", ""),
+                channel=ch.get("id", ""), channel_name=cname, ts=m.get("ts", ""),
                 user_name=m.get("username", "") or await self._name(m.get("user", "")),
                 text=await self._clean(m.get("text", "")),
-                kind="mention", permalink=m.get("permalink", ""),
+                kind=kind, permalink=m.get("permalink", ""),
             ))
         return out
 
