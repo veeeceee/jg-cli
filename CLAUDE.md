@@ -28,6 +28,8 @@ src/jg/
 ├── projectdocs.py      # read-only surface over a project's canonical artifacts (plan/research/docs/memory/confluence); defensive local-fs reads; new_research_file scaffolds dated frontmatter'd notes
 ├── roadmap.py          # portfolio altitude: fetch epics + batch-tally child status (progress/done/blocked); effective_jql, progress_bar
 ├── gates.py            # task-typed orchestration gates (declarative GateSpec/GateOption); EPIC_DECOMPOSE + build_decompose_prompt
+├── reconcile.py        # deterministic 3-way join (Jira status ⋈ tmux session ⋈ PR) → reconcile state; pure core + async gather
+├── cluster.py          # cross-source clustering phase 1: pure core (backbone/merge/group) + async enrich (headless `claude -p`, cached, fail-soft). jg's first LLM-result call. Logic-only, TUI-free. See docs/work-model.md
 ├── progress.py         # reads/updates ~/.ai/progress.json (scaffolding level per pattern); read_level, record_use
 ├── tui.py              # ChDashboard — the 3-panel `jg dashboard` (kanban + PR sidebar + rich markdown detail modals + editing + notifier) — the primary TUI. Also home to GradientPanel, themes glue, and all the action/detail/gate modals.
 └── commands/           # one click command per file
@@ -48,6 +50,7 @@ src/jg/
     ├── research.py     # jg research <project> [<topic>]  (scaffold dated note + open claude)
     ├── roadmap.py      # jg roadmap  (epics with child progress — portfolio altitude)
     ├── ai.py           # jg ai <KEY> | brainstorm | standup | sprint-review (tmux pane → claude)
+    ├── cluster.py      # jg cluster — group loose PRs/Zoho tickets under Jira anchors (backbone + LLM)
     └── dashboard.py    # jg dashboard
 ```
 
