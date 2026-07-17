@@ -95,12 +95,14 @@ _STATE = {
 
 @dataclass
 class Incoming:
-    kind: str      # "review" | "zoho"
+    kind: str      # "review" | "zoho" | "email"
     label: str
     detail: str
     url: str = ""
-    ref: str = ""  # zoho ticket id (for the detail modal)
+    ref: str = ""  # zoho ticket id / gmail message id (for the detail modal)
     keys: list[str] = field(default_factory=list)  # authored Jira links (branch / Zoho field)
+    triage: str = "actionable"   # "actionable" | "unsure" | "suppressed" (email only)
+    triage_reason: str = ""
 
     @property
     def cid(self) -> str:
@@ -160,19 +162,31 @@ async def gather_flow(config: Config) -> tuple[list[Incoming], list[rec.Reconcil
         ]
 
     async def _gmail() -> list[Incoming]:
-        from jg import gmail
+        from jg import gmail, triage
 
         if not config.gmail.is_setup:
             return []
         async with gmail.GmailClient(config) as gc:
             msgs = await gc.recent()
-        # No authored keys: a Jira key in an email subject is a weak *mention*,
-        # not an authored link (cf. a PR branch). Let the LLM place emails by
-        # content — the subject/detail it reads already contains any key.
-        return [
-            Incoming("email", gmail.sender_name(m.sender), m.subject, m.web_url, ref=m.id)
-            for m in msgs
-        ]
+            me = await gc.profile_email()
+        my_addrs = [*config.triage.my_addresses, me] if me else config.triage.my_addresses
+        out: list[Incoming] = []
+        for m in msgs:
+            v = triage.classify(
+                sender=m.sender,
+                to_cc=f"{m.to} {m.cc}",
+                is_bulk=m.is_bulk,
+                my_addresses=my_addrs,
+                noise_senders=config.triage.noise_senders,
+                signal_senders=config.triage.signal_senders,
+            )
+            # No authored keys: a Jira key in an email subject is a weak *mention*,
+            # not an authored link — the LLM places emails by content later.
+            out.append(
+                Incoming("email", gmail.sender_name(m.sender), m.subject, m.web_url, ref=m.id,
+                         triage=str(v.verdict), triage_reason=v.reason)
+            )
+        return out
 
     items_r, review_r, zoho_r, gmail_r = await asyncio.gather(
         rec.gather(config), _review_prs(), _zoho(), _gmail(), return_exceptions=True
@@ -324,9 +338,16 @@ class _IncomingRow(ListItem):
         "email": ("✉", "#7aa2f7"),
     }
 
-    def __init__(self, item: Incoming, edge: cl.Edge | None = None):
+    def __init__(self, item: Incoming, edge: cl.Edge | None = None, dim: bool = False):
         self.item = item
         glyph, style = self._GLYPH.get(item.kind, ("•", "dim"))
+        if dim:  # a triage-suppressed row shown under the expanded "N filtered" line
+            line = Text("      ", style="dim")
+            line.append(f"{glyph} ", style="dim")
+            line.append(f"{item.label:<18}", style="#565f89")
+            line.append(item.detail[:40], style="#3d3d52")
+            super().__init__(Static(line))
+            return
         # nested under a cluster head → indent + dim edge bar; else the normal bar
         line = Text("      " if edge else "▎ ", style="#3d3d52" if edge else style)
         line.append(f"{glyph} ", style=style)
@@ -338,6 +359,15 @@ class _IncomingRow(ListItem):
             if soft:
                 line.append(f"{edge.confidence:.1f}", style="#565f89")
         super().__init__(Static(line))
+
+
+class _FilteredRow(ListItem):
+    """The collapsed triage line: N suppressed items, toggled with `f`/enter."""
+    def __init__(self, n: int, shown: bool):
+        t = Text(f"  {'▾' if shown else '▸'} ", style="#565f89")
+        t.append(f"{n} filtered", style="#565f89")
+        t.append(f"   (f to {'hide' if shown else 'show'})", style="dim")
+        super().__init__(Static(t))
 
 
 class _FlowRow(ListItem):
@@ -719,6 +749,7 @@ class FlowApp(App):
         Binding("right", "focus_right", "→ list", show=False),
         Binding("left", "focus_left", "← scope", show=False),
         Binding("g", "jump", "jump to session", show=True),
+        Binding("f", "toggle_filtered", "show/hide filtered", show=True),
         Binding("q", "quit", "quit"),
         Binding("r", "refresh", "refresh"),
     ]
@@ -730,6 +761,9 @@ class FlowApp(App):
         self._incoming: list[Incoming] = []
         self._ip: list[rec.ReconcileItem] = []
         self._res: list[rec.ReconcileItem] = []
+        self._show_filtered = False  # triage: expand the suppressed "N filtered" line
+        self._clusters: list[cl.Cluster] | None = None
+        self._residual: list[cl.Item] = []
 
     def action_focus_left(self) -> None:
         _shift_focus(self, self._PANELS, -1)
@@ -777,36 +811,55 @@ class FlowApp(App):
             self.notify(f"refresh failed: {type(e).__name__}", severity="error")
             return
         self._incoming, self._ip, self._res = incoming, in_progress, resolving
+        self._clusters, self._residual = None, []   # reset grouping for the new pile
         await self._render_flow()                    # deterministic floor — instant
         self.run_worker(self._cluster_overlay())     # LLM grouping — arrives later
 
-    async def _render_flow(
-        self, clusters: list[cl.Cluster] | None = None, residual: list[cl.Item] | None = None
-    ) -> None:
-        """Render the flow list. Floor: incoming flat. Overlay: incoming grouped
-        under cluster anchors, residual flat. In-progress/resolving unchanged.
+    def _surfaced(self) -> list[Incoming]:
+        return [i for i in self._incoming if i.triage != "suppressed"]
+
+    def _suppressed(self) -> list[Incoming]:
+        return [i for i in self._incoming if i.triage == "suppressed"]
+
+    async def action_toggle_filtered(self) -> None:
+        self._show_filtered = not self._show_filtered
+        await self._render_flow()
+
+    async def _render_flow(self) -> None:
+        """Render the flow list. Surfaced incoming renders flat (floor) or grouped
+        under cluster anchors (overlay); triage-suppressed email collapses into an
+        expandable "N filtered" line. In-progress/resolving unchanged.
 
         Preserves the highlighted row across a re-render (by identity, not index)
-        so the async cluster overlay landing doesn't yank the cursor to the top."""
+        so the async overlay / filter toggle doesn't yank the cursor to the top."""
+        surfaced = self._surfaced()
+        suppressed = self._suppressed()
         lv = self.query_one("#flow", ListView)
         prev = _row_identity(lv.highlighted_child)
         await lv.clear()
-        await lv.append(_Header(f"INCOMING ({len(self._incoming)})"))
-        if clusters is None:
-            for i in self._incoming:
+
+        await lv.append(_Header(f"INCOMING ({len(surfaced)})"))
+        if self._clusters is None:
+            for i in surfaced:
                 await lv.append(_IncomingRow(i))
         else:
-            by_cid = {i.cid: i for i in self._incoming}
-            for c in clusters:
+            by_cid = {i.cid: i for i in surfaced}
+            for c in self._clusters:
                 await lv.append(_ClusterHead(c.anchor_key, c.summary))
                 for m in c.members:
                     inc = by_cid.get(m.id)
                     if inc is not None:
                         await lv.append(_IncomingRow(inc, edge=m.edge))
-            for it in residual or []:
+            for it in self._residual:
                 inc = by_cid.get(it.id)
                 if inc is not None:
                     await lv.append(_IncomingRow(inc))
+        if suppressed:
+            await lv.append(_FilteredRow(len(suppressed), self._show_filtered))
+            if self._show_filtered:
+                for i in suppressed:
+                    await lv.append(_IncomingRow(i, dim=True))
+
         await lv.append(_Header(f"IN PROGRESS ({len(self._ip)})"))
         for i in self._ip:
             await lv.append(_FlowRow(i))
@@ -824,10 +877,10 @@ class FlowApp(App):
         lv.index = restored
 
     async def _cluster_overlay(self) -> None:
-        """Async LLM grouping of the incoming pile. Fail-soft: on any problem or
-        empty result the deterministic floor stands untouched."""
-        incoming = self._incoming
-        if not incoming:
+        """Async LLM grouping of the *surfaced* incoming (no point clustering
+        noise). Fail-soft: on any problem or empty result the floor stands."""
+        surfaced = self._surfaced()
+        if not surfaced:
             return
         kind_map = {"review": "pr", "zoho": "zoho", "email": "email"}
         items = [
@@ -838,7 +891,7 @@ class FlowApp(App):
                 detail=i.detail,
                 linked_keys=i.keys,
             )
-            for i in incoming
+            for i in surfaced
         ]
         anchors = await gather_flow_anchors(self.config)
         if not anchors:
@@ -847,10 +900,9 @@ class FlowApp(App):
             result = await cl.enrich(items, anchors, claude_path=self.config.ai.claude_path)
         except Exception:
             return
-        # Only re-render if the incoming pile hasn't changed under us, and only
-        # if the LLM actually grouped something.
-        if result.clusters and self._incoming is incoming:
-            await self._render_flow(result.clusters, result.residual)
+        if result.clusters:
+            self._clusters, self._residual = result.clusters, result.residual
+            await self._render_flow()
 
     @on(ListView.Selected)
     def _selected(self, ev: ListView.Selected) -> None:
@@ -858,7 +910,9 @@ class FlowApp(App):
             self._rail(ev.item)
             return
         item = ev.item
-        if isinstance(item, _FlowRow) and item.item.key:
+        if isinstance(item, _FilteredRow):
+            self.run_worker(self.action_toggle_filtered())
+        elif isinstance(item, _FlowRow) and item.item.key:
             from jg.tui import TicketDetailModal
 
             self.push_screen(TicketDetailModal(item.item.key, self.config), self._after_detail)

@@ -130,6 +130,17 @@ class GmailConfig:
 
 
 @dataclass
+class TriageConfig:
+    """Incoming triage rules (phase 1: deterministic floor). Substring matches on
+    the From header. `my_addresses` marks direct-to-me as actionable; jg also
+    auto-includes the authenticated Gmail address at runtime. All user-editable —
+    the floor grows from corrections."""
+    my_addresses: list[str] = field(default_factory=list)
+    signal_senders: list[str] = field(default_factory=list)  # → actionable (overrides bulk)
+    noise_senders: list[str] = field(default_factory=list)   # → suppressed
+
+
+@dataclass
 class RoadmapConfig:
     """Portfolio/roadmap altitude. `jql` selects which epics appear; empty means
     derive from the default Jira project (see roadmap.effective_jql)."""
@@ -190,6 +201,7 @@ class Config:
     roadmap: RoadmapConfig = field(default_factory=RoadmapConfig)
     zoho: ZohoConfig = field(default_factory=ZohoConfig)
     gmail: GmailConfig = field(default_factory=GmailConfig)
+    triage: TriageConfig = field(default_factory=TriageConfig)
     projects: list[Project] = field(default_factory=list)
 
     # ── Back-compat delegating properties ──────────────────────────────────
@@ -314,6 +326,11 @@ class Config:
                 "query": self.gmail.query,
                 "max_results": self.gmail.max_results,
             },
+            "triage": {
+                "my_addresses": self.triage.my_addresses,
+                "signal_senders": self.triage.signal_senders,
+                "noise_senders": self.triage.noise_senders,
+            },
         }
         if self.projects:
             data["projects"] = [self._project_to_dict(p) for p in self.projects]
@@ -373,6 +390,7 @@ class Config:
         roadmap_raw = data.get("roadmap", {})
         zoho_raw = data.get("zoho", {})
         gmail_raw = data.get("gmail", {})
+        triage_raw = data.get("triage", {})
         return cls(
             atlassian=atlassian,
             tmux=TmuxConfig(
@@ -407,6 +425,11 @@ class Config:
                 client_id=gmail_raw.get("client_id", ""),
                 query=gmail_raw.get("query", GmailConfig().query),
                 max_results=int(gmail_raw.get("max_results", 40)),
+            ),
+            triage=TriageConfig(
+                my_addresses=list(triage_raw.get("my_addresses") or []),
+                signal_senders=list(triage_raw.get("signal_senders") or []),
+                noise_senders=list(triage_raw.get("noise_senders") or []),
             ),
             projects=[cls._project_from_dict(p) for p in (data.get("projects") or [])],
         )

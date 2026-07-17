@@ -212,6 +212,8 @@ class Message:
     subject: str
     snippet: str
     date: str = ""
+    to: str = ""         # raw To header (triage: addressed-directly-to-me)
+    cc: str = ""         # raw Cc header
     label_ids: list[str] = field(default_factory=list)
     list_unsubscribe: str = ""   # presence ⇒ bulk/newsletter (triage floor signal)
     precedence: str = ""         # "bulk"/"list"/"junk" ⇒ bulk (triage floor signal)
@@ -248,6 +250,8 @@ def parse_message(raw: dict) -> Message:
         subject=_header(headers, "Subject"),
         snippet=raw.get("snippet", "") or "",
         date=_header(headers, "Date"),
+        to=_header(headers, "To"),
+        cc=_header(headers, "Cc"),
         label_ids=list(raw.get("labelIds") or []),
         list_unsubscribe=_header(headers, "List-Unsubscribe"),
         precedence=_header(headers, "Precedence"),
@@ -262,7 +266,7 @@ def sender_name(raw_from: str) -> str:
 
 # ── async API client ──────────────────────────────────────────────────────────
 class GmailClient:
-    _META_HEADERS = ("From", "Subject", "Date", "List-Unsubscribe", "Precedence")
+    _META_HEADERS = ("From", "To", "Cc", "Subject", "Date", "List-Unsubscribe", "Precedence")
 
     def __init__(self, config: Config):
         self.config = config.gmail
@@ -289,6 +293,14 @@ class GmailClient:
         if resp.status_code != 200 or not resp.content:
             raise GmailError(f"Gmail API {resp.status_code}: {resp.text[:200]}")
         return resp.json()
+
+    async def profile_email(self) -> str:
+        """The authenticated account's address — auto-used as a triage my_address."""
+        try:
+            data = await self._get("/profile")
+            return (data.get("emailAddress") or "").lower()
+        except GmailError:
+            return ""
 
     async def list_message_ids(self, query: str, max_results: int) -> list[str]:
         data = await self._get("/messages", {"q": query, "maxResults": max_results})
